@@ -42,8 +42,8 @@ BATCH_ROOT_DIR = "batch_streetview_results"
 GLOBAL_MAX_STEPS = 8  # 全局最大导航步数
 GLOBAL_MOVE_STEP = 5  # 全局每次移动距离（米）
 GLOBAL_MAX_RETRIES = 3  # 全局API重试次数
-TURN_ANGLE = 45  # 转向角度（左/右转均为15°，可按需修改）
-GPS_CSV_PATH = "one.csv"  # 核心新增：GPS点位CSV文件路径（项目根目录）
+TURN_ANGLE = 10  # 转向角度（左/右转均为15°，可按需修改）
+GPS_CSV_PATH = "minitest.csv"  # 核心新增：GPS点位CSV文件路径（项目根目录）
 
 
 # =================================================================================
@@ -196,26 +196,42 @@ def init_point_dir(point_info: Dict) -> str:
 
 
 # ------------------------------
-# 原有工具函数：保存街景图片（无修改）
+# 新增工具函数：图片转Base64编码
+# ------------------------------
+def image_to_base64(image: Image.Image) -> str:
+    """
+    将PIL图片转换为Base64编码字符串（JPEG格式）
+    :param image: PIL图片对象
+    :return: Base64编码字符串
+    """
+    img_byte_arr = BytesIO()
+    image.save(img_byte_arr, format='JPEG', quality=95)
+    img_byte_arr.seek(0)
+    return base64.b64encode(img_byte_arr.read()).decode('utf-8')
+
+
+# ------------------------------
+# 修改保存街景图片函数：新增Base64记录
 # ------------------------------
 def save_streetview_image(image: Image.Image, step_num: int, img_save_dir: str,
-                          is_force_prediction: bool = False) -> str:
+                          is_force_prediction: bool = False) -> Tuple[str, str]:
     """
-    保存街景图片：步骤数显示从1开始，图片文件名从0开始；强制预测图片无特殊标识，仅连续计数
+    保存街景图片 + 生成Base64编码
     :param image: 街景图片对象
     :param step_num: 步骤数（从1开始）
     :param img_save_dir: 保存目录
-    :param is_force_prediction: 是否为强制预测步骤（仅用于日志提示，不影响命名）
-    :return: 图片绝对路径
+    :param is_force_prediction: 是否为强制预测步骤（仅用于日志提示）
+    :return: (图片绝对路径, Base64编码字符串)
     """
     # 步骤数-1转为图片编号（从0开始）
     img_num = step_num - 1
-    # 统一命名格式：去掉force_标识，仅保留step_数字_streetview.jpg
     img_name = f"step_{img_num}_streetview.jpg"
     img_path = os.path.join(img_save_dir, img_name)
     image.save(img_path, format='JPEG', quality=95)
-    return os.path.abspath(img_path)
 
+    # 生成Base64编码
+    img_b64 = image_to_base64(image)
+    return os.path.abspath(img_path), img_b64
 # ------------------------------
 # 原有工具函数：相对视角转地理角度（适配6个动作，无修改）
 # ------------------------------
@@ -356,9 +372,9 @@ class StreetViewAutoLocEnv(gym.Env):
         self.point_dir = point_dir
         self.img_save_dir = img_save_dir
 
-        # 修复：初始化OpenAI客户端（原有代码缺失，运行必报错）
+        # 修复：初始化OpenAI客户端
         self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
-        self.openai_client = OpenAI(api_key=self.openai_api_key,base_url="https://api.laozhang.ai/v1")
+        self.openai_client = OpenAI(api_key=self.openai_api_key, base_url="https://api.laozhang.ai/v1")
 
         # 动作空间：6个离散动作
         self.action_space = spaces.Discrete(6)
@@ -374,7 +390,8 @@ class StreetViewAutoLocEnv(gym.Env):
         self.final_prediction: str = ""
         self.action_history: List[str] = []
         self.image_path_history: Dict[int, str] = {}
-
+        # 新增：保存每一步图片的Base64编码（用于最终预测时批量上传）
+        self.image_b64_history: Dict[int, str] = {}
     @retry_on_failure(max_retries=3, delay=2.0)
     def gpt4o_decision(self, image: Image.Image, step_num: int) -> str:
         img_byte_arr = BytesIO()
@@ -385,30 +402,32 @@ class StreetViewAutoLocEnv(gym.Env):
 
         # GPT-4o提示词：明确6个动作，基于当前视角相对方向
         prompt = f"""
-Your Role: Autonomous Google Street View Navigator & Visual Location Predictor
-CORE MISSION: Predict the GPS coordinates of your INITIAL starting point using ONLY VISUAL FEATURES.
-ACTION VALUES CONTEXT (FOR NAVIGATION ONLY - NO CALCULATION):
-- Exact action params: {self.move_step}m per move | {TURN_ANGLE}° per turn | Current heading: {self.data_handler.heading:.1f}°
-- Taken actions: {action_history_str}
-- Current steps / Max steps: {self.current_step}/{self.max_steps}
-ABSOLUTE RULES (VIOLATION = INVALID PREDICTION):
-1. NO GPS coordinates provided, NO geometric/spatial calculations allowed!
-2. All decisions/predictions MUST be based SOLELY on visual clues from the street view image.
-3. Navigate toward unique visual landmarks (street signs, buildings, landmarks) to find identifiable features.
-4. All MOVE actions are RELATIVE to your CURRENT VIEW DIRECTION (not fixed geographic north/south)!
+        Your Role: Autonomous Google Street View Navigator & Visual Location Predictor
+        CORE MISSION: Predict the GPS coordinates of your INITIAL starting point using ONLY VISUAL FEATURES.
+        ACTION VALUES CONTEXT (FOR NAVIGATION ONLY - NO CALCULATION):
+        - Exact action params: {self.move_step}m per move | {TURN_ANGLE}° per turn | Current heading: {self.data_handler.heading:.1f}°
+        - Taken actions: {action_history_str}
+        - Current steps / Max steps: {self.current_step}/{self.max_steps}
 
-# 仅有的6个Action Options（CHOOSE ONLY ONE NUMBER, NO EXTRA TEXT, NO OTHER WORDS）
-0 = Move FORWARD {self.move_step}m (current view front)
-1 = Move LEFT {self.move_step}m (current view left side)
-2 = Move RIGHT {self.move_step}m (current view right side)
-3 = Move BACKWARD {self.move_step}m (current view back)
-4 = Turn LEFT {TURN_ANGLE}° (view left, no movement)
-5 = Turn RIGHT {TURN_ANGLE}° (view right, no movement)
+        ABSOLUTE RULES (VIOLATION = INVALID PREDICTION):
+        1. NO GPS coordinates provided, NO geometric/spatial calculations allowed!
+        2. All decisions/predictions MUST be based SOLELY on visual clues from the street view image.
+        3. Navigate toward unique visual landmarks (street signs, buildings, landmarks) to find identifiable features.
+        4. All MOVE actions are RELATIVE to your CURRENT VIEW DIRECTION (not fixed geographic north/south)!
+        5. You MUST ONLY move ALONG THE ROAD. Do NOT walk into buildings, grass, walls, rivers, or off-road.
 
-# OUTPUT FORMAT (STRICTLY FOLLOW, NO DEVIATIONS, NO SYMBOLS, NO EXPLANATION)
-Output ONLY the number of your chosen action (0/1/2/3/4/5), e.g., 0, 4, 5 (nothing else)!
-You will be forced to make a final GPS prediction when max navigation steps are reached.
-"""
+        # 仅有的6个Action Options（CHOOSE ONLY ONE NUMBER, NO EXTRA TEXT, NO OTHER WORDS）
+        0 = Move FORWARD {self.move_step}m (current view front)
+        1 = Move LEFT {self.move_step}m (current view left side)
+        2 = Move RIGHT {self.move_step}m (current view right side)
+        3 = Move BACKWARD {self.move_step}m (current view back)
+        4 = Turn LEFT {TURN_ANGLE}° (view left, no movement)
+        5 = Turn RIGHT {TURN_ANGLE}° (view right, no movement)
+
+        # OUTPUT FORMAT (STRICTLY FOLLOW, NO DEVIATIONS, NO SYMBOLS, NO EXPLANATION)
+        Output ONLY the number of your chosen action (0/1/2/3/4/5), e.g., 0, 4, 5 (nothing else)!
+        You will be forced to make a final GPS prediction when max navigation steps are reached.
+        """
         response = self.openai_client.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -506,62 +525,93 @@ You will be forced to make a final GPS prediction when max navigation steps are 
             info["msg"] += f" | Failed to get street view image: {str(e)[:50]}..."
             reward = -1.0
 
-        # 达到最大步数：强制GPT-4o最终GPS预测（修复核心逻辑）
+        # 达到最大步数：强制GPT-4o最终GPS预测（完全重构）
         if self.current_step >= self.max_steps and not terminated:
             truncated = True
-            info["msg"] += " | Max steps reached - forcing final visual GPS prediction"
+            info["msg"] += " | Max steps reached - forcing final visual GPS prediction (using ALL history images)"
             if self.current_image:
                 try:
-                    # 关键修复：最终预测步骤编号 = max_steps + 1（避免覆盖）
-                    final_pred_step_num = self.max_steps + 1
                     # 保存最终预测图片（编号final_pred_step_num → 图片名step_{final_pred_step_num-1}）
-                    force_pred_img_path = save_streetview_image(
+                    final_pred_step_num = self.max_steps + 1
+                    force_pred_img_path, force_pred_b64 = save_streetview_image(
                         self.current_image, final_pred_step_num, self.img_save_dir, is_force_prediction=True
                     )
                     self.image_path_history[final_pred_step_num] = force_pred_img_path
+                    self.image_b64_history[final_pred_step_num] = force_pred_b64  # 记录最终图片的Base64
                     print(f"🖼️  Step {final_pred_step_num} (final prediction) image saved: {force_pred_img_path}")
 
-                    # 强制预测提示词（无修改）
-                    force_prompt = f"""
-    MAX NAVIGATION STEPS ({self.max_steps}) REACHED! YOU MUST MAKE A FINAL PREDICTION OF THE INITIAL GPS COORDINATES.
-    RULES (STRICTLY FOLLOW, NO DEVIATIONS):
-    1. NO geometric/spatial calculations - ONLY use visual clues from the street view image and your navigation history.
-    2. Base your prediction on identifiable visual features (landmarks, buildings, street signs, city architecture, road style).
-    3. Do NOT guess randomly - use the most obvious visual clues to determine the location.
+                    # 构建完整的导航历史描述
+                    full_action_history = "\n".join([
+                        f"Step {i}: {action}" for i, action in enumerate(self.action_history, 1)
+                    ]) if self.action_history else "No navigation actions executed"
 
-    # OUTPUT FORMAT (EXACTLY THIS, NO OTHER TEXT, NO SYMBOLS, NO EXTRA LINES):
-    "predicted_initial_coords: [LATITUDE],[LONGITUDE] | reasoning: [DETAILED VISUAL CLUES ONLY]"
-    - [LATITUDE/LONGITUDE]: Valid GPS float numbers (e.g., 40.7580,-73.9855)
-    - [REASONING]: Specific visual features that led to your prediction (1-3 concise sentences)
-    """
-                    # 调用GPT-4o做最终预测
-                    img_byte_arr = BytesIO()
-                    self.current_image.save(img_byte_arr, format='JPEG', quality=95)
-                    img_byte_arr.seek(0)
-                    b64_encoded = base64.b64encode(img_byte_arr.read()).decode('utf-8')
+                    # 优化后的提示词：明确要求结合所有历史图片和动作轨迹
+                    force_prompt = f"""
+                    MAX NAVIGATION STEPS ({self.max_steps}) REACHED! YOU MUST MAKE A FINAL PREDICTION OF THE INITIAL GPS COORDINATES.
+
+                    # CONTEXT (USE ALL INFORMATION BELOW FOR PREDICTION):
+                    1. Navigation History (all actions taken):
+                    {full_action_history}
+
+                    2. Visual Data: You will receive ALL street view images from the entire navigation process (Step 1 to Step {final_pred_step_num}).
+                    3. Movement Rules: {self.move_step}m per move | {TURN_ANGLE}° per turn | All moves are relative to current view direction.
+
+                    # STRICT RULES (VIOLATION = INVALID PREDICTION):
+                    1. NO geometric/spatial calculations - ONLY use visual clues from ALL street view images and navigation history.
+                    2. Synthesize information from ALL images (not just the last one) - look for consistent landmarks, street signs, architecture styles, road patterns.
+                    3. Base your prediction on identifiable visual features (landmarks, buildings, street signs, city architecture, road style, language on signs).
+                    4. Do NOT guess randomly - use the most obvious and consistent visual clues across all images.
+                    5. 🛑 NAVIGATION CONSTRAINT REVIEW: All movements were done **ALONG THE ROAD ONLY**, no off-road, no crossing buildings/walls.
+
+                    # OUTPUT FORMAT (EXACTLY THIS, NO OTHER TEXT, NO SYMBOLS, NO EXTRA LINES):
+                    "predicted_initial_coords: [LATITUDE],[LONGITUDE] | reasoning: [DETAILED VISUAL CLUES FROM ALL IMAGES]"
+                    - [LATITUDE/LONGITUDE]: Valid GPS float numbers (e.g., 40.7580,-73.9855)
+                    - [REASONING]: Specific visual features from MULTIPLE images that led to your prediction (2-4 concise sentences)
+                    """
+
+                    # 构建GPT消息：先文本，再批量上传所有图片
+                    gpt_messages = [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": force_prompt}
+                            ]
+                        }
+                    ]
+
+                    # 批量添加所有历史图片（按步骤顺序）
+                    for step_num in sorted(self.image_b64_history.keys()):
+                        img_b64 = self.image_b64_history[step_num]
+                        gpt_messages[0]["content"].append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{img_b64}",
+                                "detail": "high"
+                            }
+                        })
+                        # 给每张图片添加步骤说明（帮助GPT理解顺序）
+                        gpt_messages[0]["content"].append({
+                            "type": "text",
+                            "text": f"📸 Image from Step {step_num} (navigation process)"
+                        })
+
+                    # 调用GPT-4o做最终预测（增大max_tokens以容纳推理内容）
                     response = self.openai_client.chat.completions.create(
                         model="gpt-4o",
-                        messages=[
-                            {"role": "user", "content": [
-                                {"type": "text", "text": force_prompt},
-                                {"type": "image_url", "image_url": {
-                                    "url": f"data:image/jpeg;base64,{b64_encoded}",
-                                    "detail": "high"
-                                }}
-                            ]}
-                        ],
+                        messages=gpt_messages,
                         temperature=0.1,
-                        max_tokens=500,
-                        timeout=60
+                        max_tokens=1000,  # 增大token数，容纳详细推理
+                        timeout=120  # 延长超时时间（多图片处理需要更久）
                     )
                     self.final_prediction = response.choices[0].message.content.strip()
-                    # 修改图片路径描述
-                    self.final_prediction += f"\n📸 Final prediction image path: {force_pred_img_path}"
+                    self.final_prediction += f"\n📸 Final prediction based on {len(self.image_b64_history)} images (Step 1 to {final_pred_step_num})"
+                    self.final_prediction += f"\n📸 Final image path: {force_pred_img_path}"
+
                 except Exception as e:
-                    self.final_prediction = f"Final prediction failed due to error: {str(e)[:100]}... | No final prediction image saved"
+                    error_detail = traceback.format_exc()[:200]
+                    self.final_prediction = f"Final prediction failed due to error: {str(e)[:100]}... | Error detail: {error_detail} | No final prediction image saved"
             else:
                 self.final_prediction = "Final prediction failed: No valid street view image available for final step"
-
         # 构造返回值
         obs = self.get_observation()
         info.update({
@@ -579,6 +629,8 @@ You will be forced to make a final GPS prediction when max navigation steps are 
         self.final_prediction = ""
         self.action_history = []
         self.image_path_history = {}
+        # 新增：清空Base64历史
+        self.image_b64_history = {}
         self.data_handler.init_position(
             self.data_handler.initial_lat, self.data_handler.initial_lng, heading=0.0, pitch=0.0
         )
@@ -633,24 +685,26 @@ You will be forced to make a final GPS prediction when max navigation steps are 
                         break
                     continue
 
-                # 保存当前步骤图片
+                # 保存当前步骤图片 + 记录Base64
                 current_step_num = self.current_step + 1
-                img_save_path = save_streetview_image(self.current_image, current_step_num, self.img_save_dir)
+                img_save_path, img_b64 = save_streetview_image(self.current_image, current_step_num, self.img_save_dir)
                 self.image_path_history[current_step_num] = img_save_path
+                # 新增：保存Base64编码
+                self.image_b64_history[current_step_num] = img_b64
                 print(f"🖼️  Step {current_step_num} image saved: {img_save_path}")
 
-                # 调用GPT-4o获取决策
+                # 调用GPT-4o获取决策（这部分逻辑不变）
                 print(
                     f"📡 Step {current_step_num}: Requesting GPT-4o visual decision (heading: {self.data_handler.heading:.1f}°)...")
                 gpt_response = self.gpt4o_decision(self.current_image, current_step_num)
                 print(f"💬 GPT Raw Response: {gpt_response}")
                 print("-" * 60 + "\n")
 
-                # 解析并执行动作
+                # 解析并执行动作（这部分逻辑不变）
                 action = self.parse_gpt_decision(gpt_response)
                 obs, reward, terminated, truncated, info = self.step(action)
 
-                # 打印执行结果
+                # 打印执行结果（这部分逻辑不变）
                 action_info = self.action_history[-1] if self.action_history else "Initial step"
                 print(f"✅ Executed Action {action}: {action_info}")
                 print(f"📝 Status: {info['msg']}")
@@ -660,7 +714,6 @@ You will be forced to make a final GPS prediction when max navigation steps are 
                 # 终止条件：达到最大步数
                 if truncated:
                     break
-
         except Exception as e:
             process_status = "failed"
             error_reason = str(e)[:200] + "..." if len(str(e)) > 200 else str(e)
