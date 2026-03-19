@@ -3,35 +3,42 @@
   <component name="CsvFileAttributes">
     <option name="attributeMap">
       <map>
-        <entry key="$PROJECT_DIR$/../Visual-Only Street View Global Localization/geochain_mini.csv">
+        <entry key="/geochain_mini.csv">
           <value>
             <Attribute>
               <option name="separator" value="," />
             </Attribute>
           </value>
         </entry>
-        <entry key="$PROJECT_DIR$/../Visual-Only Street View Global Localization/geochain_mini_test.csv">
+        <entry key="/geochain_mini_test.csv">
           <value>
             <Attribute>
               <option name="separator" value="," />
             </Attribute>
           </value>
         </entry>
-        <entry key="$PROJECT_DIR$/../Visual-Only Street View Global Localization/gps_targets.csv">
+        <entry key="/gps_targets.csv">
           <value>
             <Attribute>
               <option name="separator" value="," />
             </Attribute>
           </value>
         </entry>
-        <entry key="$PROJECT_DIR$/../Visual-Only Street View Global Localization/minitest.csv">
+        <entry key="/minitest.csv">
           <value>
             <Attribute>
               <option name="separator" value="," />
             </Attribute>
           </value>
         </entry>
-        <entry key="$PROJECT_DIR$/../Visual-Only Street View Global Localization/one.csv">
+        <entry key="/minitest_corrected.csv">
+          <value>
+            <Attribute>
+              <option name="separator" value="," />
+            </Attribute>
+          </value>
+        </entry>
+        <entry key="/one.csv">
           <value>
             <Attribute>
               <option name="separator" value="," />
