@@ -39,6 +39,7 @@ PITCH_STEP = 10
 TURN_ANGLE = 10
 GPS_CSV_PATH = "minitest.csv"
 
+
 # ====================== 读取GPS CSV ======================
 def read_gps_targets_from_csv(csv_path: str) -> List[Dict]:
     gps_targets = []
@@ -82,7 +83,9 @@ def read_gps_targets_from_csv(csv_path: str) -> List[Dict]:
         raise ValueError("CSV中无有效GPS点位")
     return gps_targets
 
+
 BATCH_GPS_TARGETS = read_gps_targets_from_csv(GPS_CSV_PATH)
+
 
 # ====================== 重试装饰器 ======================
 def retry_on_failure(max_retries: int = 3, delay: float = 1.0):
@@ -98,8 +101,11 @@ def retry_on_failure(max_retries: int = 3, delay: float = 1.0):
                         raise
                     time.sleep(delay)
             return None
+
         return wrapper
+
     return decorator
+
 
 # ====================== 文件工具 ======================
 def init_batch_dir():
@@ -108,10 +114,12 @@ def init_batch_dir():
         shutil.rmtree(BATCH_ROOT_DIR)
     os.makedirs(BATCH_ROOT_DIR, exist_ok=True)
 
+
 def get_point_dir_name(point_info: Dict) -> str:
     lat_str = f"{point_info['lat']:.4f}".replace(".", "_")
     lng_str = f"{point_info['lng']:.4f}".replace(".", "_")
     return f"{point_info['name']}_lat{lat_str}_lng{lng_str}"
+
 
 def init_point_dir(point_info: Dict) -> Tuple[str, str]:
     point_dir = os.path.join(BATCH_ROOT_DIR, get_point_dir_name(point_info))
@@ -119,13 +127,15 @@ def init_point_dir(point_info: Dict) -> Tuple[str, str]:
     os.makedirs(img_dir, exist_ok=True)
     return point_dir, img_dir
 
+
 def image_to_base64(image: Image.Image) -> str:
     buf = BytesIO()
     image.save(buf, format='JPEG', quality=100)  # 提升Base64编码的图片质量
     return base64.b64encode(buf.getvalue()).decode('utf-8')
 
+
 def save_streetview_image(image: Image.Image, step_num: int, img_save_dir: str) -> Tuple[str, str]:
-    img_path = os.path.join(img_save_dir, f"step_{step_num-1}_streetview.jpg")
+    img_path = os.path.join(img_save_dir, f"step_{step_num - 1}_streetview.jpg")
     # 提升保存质量：100%无压缩 + 关闭色度子采样
     image.save(
         img_path,
@@ -136,6 +146,7 @@ def save_streetview_image(image: Image.Image, step_num: int, img_save_dir: str) 
     )
     return img_path, image_to_base64(image)
 
+
 # ====================== 地理角度工具 ======================
 def get_geo_angle(current_heading: float, relative_dir: str) -> float:
     angle_map = {
@@ -145,6 +156,7 @@ def get_geo_angle(current_heading: float, relative_dir: str) -> float:
         "backward": current_heading + 180
     }
     return angle_map[relative_dir] % 360
+
 
 # ====================== Google Street View ======================
 class GoogleStreetViewData:
@@ -183,12 +195,12 @@ class GoogleStreetViewData:
         d = self.move_step
 
         new_lat_r = math.asin(
-            math.sin(lat_r) * math.cos(d/R) +
-            math.cos(lat_r) * math.sin(d/R) * math.cos(ang_r)
+            math.sin(lat_r) * math.cos(d / R) +
+            math.cos(lat_r) * math.sin(d / R) * math.cos(ang_r)
         )
         new_lng_r = lng_r + math.atan2(
-            math.sin(ang_r) * math.sin(d/R) * math.cos(lat_r),
-            math.cos(d/R) - math.sin(lat_r) * math.sin(new_lat_r)
+            math.sin(ang_r) * math.sin(d / R) * math.cos(lat_r),
+            math.cos(d / R) - math.sin(lat_r) * math.sin(new_lat_r)
         )
         return math.degrees(new_lat_r), math.degrees(new_lng_r)
 
@@ -196,18 +208,32 @@ class GoogleStreetViewData:
         self.heading = (self.heading + delta_angle) % 360
 
     @retry_on_failure(3, 1.0)
-    def get_street_view_image(self) -> Optional[Image.Image]:
+    def get_street_view_image(self) -> Tuple[Optional[Image.Image], Optional[float], Optional[float]]:
+        """
+        修改：返回图像 + 实际采样点的GPS坐标
+        return: (图像, 实际lat, 实际lng)
+        """
         params = {
             "location": f"{self.current_lat},{self.current_lng}",
             "heading": self.heading,
             "pitch": self.pitch,
             "fov": self.fov,
             "radius": 6,
-            "size": "1920x1080",  # 提升到1080P（最大支持2048x2048）
+            "size": "1920x1080",
             "key": self.google_api_key
         }
+        # 1. 先获取元数据（包含实际采样点坐标）
+        metadata = self.get_metadata(self.current_lat, self.current_lng)
+        actual_lat, actual_lng = None, None
+        if metadata and "location" in metadata:
+            actual_lat = metadata["location"]["lat"]
+            actual_lng = metadata["location"]["lng"]
+
+        # 2. 获取街景图像
         r = requests.get(self.static_url, params=params, stream=True, timeout=10)
-        return Image.open(BytesIO(r.content)).convert("RGB")
+        image = Image.open(BytesIO(r.content)).convert("RGB")
+
+        return image, actual_lat, actual_lng
 
     def move(self, direction: float, target_distance: float = None) -> Tuple[bool, str, float]:
         """
@@ -244,9 +270,10 @@ class GoogleStreetViewData:
             self.current_lat, self.current_lng,
             nlat, nlng
         )
-        # 更新坐标
+        # 更新坐标（先更新为理论计算值）
         self.current_lat, self.current_lng = nlat, nlng
         return True, "Move successful", actual_distance
+
 
 # ====================== StreetViewAutoLocEnv ======================
 class StreetViewAutoLocEnv(gym.Env):
@@ -265,9 +292,9 @@ class StreetViewAutoLocEnv(gym.Env):
     }
 
     def __init__(
-        self, initial_lat: float, initial_lng: float,
-        move_step: float = GLOBAL_MOVE_STEP, max_retries: int = 3, max_steps: int = 10,
-        point_dir: str = "./", img_save_dir: str = "./images"
+            self, initial_lat: float, initial_lng: float,
+            move_step: float = GLOBAL_MOVE_STEP, max_retries: int = 3, max_steps: int = 10,
+            point_dir: str = "./", img_save_dir: str = "./images"
     ):
         super().__init__()
         self.data_handler = GoogleStreetViewData(max_retries=max_retries)
@@ -297,6 +324,14 @@ class StreetViewAutoLocEnv(gym.Env):
         self.action_history = []
         self.image_path_history = {}
         self.image_b64_history = {}
+        # 新增：记录理论坐标和实际坐标的差异
+        self.coord_correction_history = []
+        # 新增：临时存储当前步的理论/实际坐标（用于手动控制显示）
+        self.current_theoretical_lat = None
+        self.current_theoretical_lng = None
+        self.current_actual_lat = None
+        self.current_actual_lng = None
+        self.current_correction_diff = None
 
     # ====================== 完全原版提示词，一字未改 ======================
     @retry_on_failure(3, 2.0)
@@ -359,7 +394,7 @@ class StreetViewAutoLocEnv(gym.Env):
         return max(0, min(5, int(match.group(1))))
 
     def get_observation(self) -> Dict[str, Any]:
-        img_arr = np.array(self.current_image) if self.current_image else np.zeros((1080,1920,3), int)
+        img_arr = np.array(self.current_image) if self.current_image else np.zeros((1080, 1920, 3), int)
         return {
             "image": img_arr,
             "lat": np.array([self.data_handler.current_lat]),
@@ -375,19 +410,36 @@ class StreetViewAutoLocEnv(gym.Env):
         reward = 0.0
         terminated = truncated = False
 
+        # 重置当前步的坐标记录
+        self.current_theoretical_lat = None
+        self.current_theoretical_lng = None
+        self.current_actual_lat = None
+        self.current_actual_lng = None
+        self.current_correction_diff = None
+
+        # 记录动作历史
+        self.action_history.append(f"Step {self.current_step}: {a_type} {a_dir}")
+
+        # ========== 1. 执行对应动作 ==========
         if a_type == "move":
+            # 移动动作：计算理论GPS并更新
             geo_ang = get_geo_angle(self.data_handler.heading, a_dir)
             ok, msg, actual_distance = self.data_handler.move(geo_ang, self.data_handler.move_step)
             info["msg"] = msg
             info["actual_distance"] = actual_distance
+            # 保存理论坐标
+            self.current_theoretical_lat = self.data_handler.current_lat
+            self.current_theoretical_lng = self.data_handler.current_lng
+            info["theoretical_lat"] = self.current_theoretical_lat
+            info["theoretical_lng"] = self.current_theoretical_lng
             reward = 0.0 if ok else -1.0
         elif a_type == "turn":
+            # 转向动作：仅调整朝向，不修改坐标
             delta = -TURN_ANGLE if a_dir == "left" else TURN_ANGLE
             self.data_handler.turn(delta)
             info["msg"] = f"Turned {a_dir.upper()} {abs(delta)}°"
-        # 新增：FOV缩放逻辑
         elif a_type == "fov":
-            # FOV范围限制：10°（最大放大）~ 120°（最大缩小）
+            # FOV缩放：仅调整视角，不修改坐标
             current_fov = self.data_handler.fov if hasattr(self.data_handler, 'fov') else 30
             if a_dir == "zoom_in":
                 new_fov = max(10, current_fov - FOV_STEP)
@@ -395,8 +447,8 @@ class StreetViewAutoLocEnv(gym.Env):
                 new_fov = min(120, current_fov + FOV_STEP)
             self.data_handler.fov = new_fov
             info["msg"] = f"FOV {a_dir.upper()} to {new_fov}° (视角{'放大' if a_dir == 'zoom_in' else '缩小'})"
-        # 新增：Pitch俯仰逻辑
         elif a_type == "pitch":
+            # 俯仰调整：仅调整角度，不修改坐标
             current_pitch = self.data_handler.pitch
             if a_dir == "up":
                 new_pitch = min(90, current_pitch + PITCH_STEP)
@@ -405,12 +457,46 @@ class StreetViewAutoLocEnv(gym.Env):
             self.data_handler.pitch = new_pitch
             info["msg"] = f"Pitch {a_dir.upper()} to {new_pitch}° ({'抬头' if a_dir == 'up' else '低头'})"
 
+        # ========== 2. 获取图像（所有动作都需要更新图像） ==========
         try:
-            self.current_image = self.data_handler.get_street_view_image()
-        except:
+            self.current_image, actual_lat, actual_lng = self.data_handler.get_street_view_image()
+
+            # ========== 3. 仅在移动动作时执行坐标修正 ==========
+            if a_type == "move" and actual_lat and actual_lng:
+                # 保存实际坐标
+                self.current_actual_lat = actual_lat
+                self.current_actual_lng = actual_lng
+                self.current_correction_diff = calculate_gps_distance(
+                    self.current_theoretical_lat, self.current_theoretical_lng,
+                    actual_lat, actual_lng
+                )
+                # 记录修正前后的差异
+                correction = {
+                    "step": self.current_step,
+                    "theoretical_lat": self.current_theoretical_lat,
+                    "theoretical_lng": self.current_theoretical_lng,
+                    "actual_lat": actual_lat,
+                    "actual_lng": actual_lng,
+                    "lat_diff": actual_lat - self.current_theoretical_lat,
+                    "lng_diff": actual_lng - self.current_theoretical_lng,
+                    "distance_diff": self.current_correction_diff
+                }
+                self.coord_correction_history.append(correction)
+
+                # 更新为实际采样点坐标
+                self.data_handler.current_lat = actual_lat
+                self.data_handler.current_lng = actual_lng
+
+                # 补充info信息
+                info["actual_lat"] = actual_lat
+                info["actual_lng"] = actual_lng
+                info["coord_correction_diff_m"] = self.current_correction_diff
+        except Exception as e:
             self.current_image = None
             reward = -1.0
+            info["error"] = f"获取图像失败: {str(e)}"
 
+        # ========== 4. 检查是否达到最大步数 ==========
         if self.current_step >= self.max_steps:
             truncated = True
             self._force_final_prediction()
@@ -480,9 +566,17 @@ class StreetViewAutoLocEnv(gym.Env):
         self.action_history = []
         self.image_path_history = {}
         self.image_b64_history = {}
+        self.coord_correction_history = []  # 重置坐标修正历史
+        # 重置临时坐标记录
+        self.current_theoretical_lat = None
+        self.current_theoretical_lng = None
+        self.current_actual_lat = None
+        self.current_actual_lng = None
+        self.current_correction_diff = None
         self.data_handler.init_position(self.data_handler.initial_lat, self.data_handler.initial_lng)
         try:
-            self.current_image = self.data_handler.get_street_view_image()
+            # 重置时获取初始图像（仅获取，不修正坐标，保持初始传入的GPS）
+            self.current_image, _, _ = self.data_handler.get_street_view_image()
         except:
             self.current_image = None
         return self.get_observation()
@@ -521,26 +615,32 @@ def manual_control(env):
     print("视角：Z=放大 X=缩小")  # 新增FOV指令
     print("俯仰：R=抬头 F=低头")  # 新增Pitch指令
     print("退出：exit")
-    print(f"提示：目标步长 {env.data_handler.move_step} 米，每次操作后显示【执行结果】和【实际变化】\n")
+    print(f"提示：目标步长 {env.data_handler.move_step} 米，仅移动动作会修正GPS坐标\n")
 
     # 初始化时显示初始图像
     if env.current_image is not None:
         env.render()
 
     while True:
-        # 显示当前状态（新增FOV/Pitch）
+        # 显示当前状态（仅显示实际GPS，非移动动作不修改）
         current_lat = env.data_handler.current_lat
         current_lng = env.data_handler.current_lng
         current_heading = env.data_handler.heading
         current_fov = env.data_handler.fov if hasattr(env.data_handler, 'fov') else 30
         current_pitch = env.data_handler.pitch
-        print(f"📌 当前坐标: {current_lat:.6f}, {current_lng:.6f}")
+        print(f"📌 当前GPS坐标: {current_lat:.6f}, {current_lng:.6f}")
         print(f"🧭 朝向: {current_heading:.1f}° | 视角FOV: {current_fov}° | 俯仰Pitch: {current_pitch}°")
 
         # 获取用户指令
         cmd = input("> 请输入操作指令: ").strip().lower()
         if cmd == "exit":
             print("👋 退出手动操控模式")
+            # 打印坐标修正历史（仅移动动作有记录）
+            if env.coord_correction_history:
+                print("\n📊 坐标修正历史（仅移动动作）：")
+                for corr in env.coord_correction_history:
+                    print(
+                        f"Step {corr['step']}: 理论({corr['theoretical_lat']:.6f},{corr['theoretical_lng']:.6f}) → 实际({corr['actual_lat']:.6f},{corr['actual_lng']:.6f}) | 偏差 {corr['distance_diff']:.2f} 米")
             break
 
         # 扩展指令映射（新增z/x/r/f）
@@ -554,7 +654,7 @@ def manual_control(env):
             print("❌ 无效指令！请输入 W/A/S/D/Q/E/Z/X/R/F 或 exit\n")
             continue
 
-        # 执行操作前记录坐标
+        # 执行操作前记录坐标（用于对比）
         pre_lat = current_lat
         pre_lng = current_lng
 
@@ -573,20 +673,28 @@ def manual_control(env):
             if reward == 0.0:
                 print(
                     f"✅ 移动成功！方向：{relative_dir} | 目标步长：{env.data_handler.move_step}米 | 实际移动：{actual_distance:.2f} 米")
+                # 显示理论坐标和修正后的实际坐标
+                if env.current_theoretical_lat and env.current_actual_lat:
+                    print(f"📏 坐标修正过程：")
+                    print(f"   理论计算坐标：{env.current_theoretical_lat:.6f}, {env.current_theoretical_lng:.6f}")
+                    print(f"   实际采样坐标：{env.current_actual_lat:.6f}, {env.current_actual_lng:.6f}")
+                    print(f"   坐标偏差：{env.current_correction_diff:.2f} 米")
             else:
                 print(f"❌ 移动失败！原因：{msg} | 实际移动：{actual_distance:.2f} 米")
         else:
-            # 转向/FOV/Pitch统一反馈
+            # 转向/FOV/Pitch：仅反馈动作结果，无坐标变化
             print(f"✅ {msg}")
 
         # 显示执行后的最新状态
-        print(f"📌 操作后坐标: {env.data_handler.current_lat:.6f}, {env.data_handler.current_lng:.6f}")
+        print(f"📌 操作后GPS坐标: {env.data_handler.current_lat:.6f}, {env.data_handler.current_lng:.6f}")
         print(
             f"🧭 操作后朝向: {env.data_handler.heading:.1f}° | 视角FOV: {env.data_handler.fov}° | 俯仰Pitch: {env.data_handler.pitch}°\n")
 
         # 渲染最新街景
         env.render()
-# ====================== 批处理运行 ======================
+
+
+# ====================== 批处理运行（保留，无核心修改） ======================
 def batch_run():
     init_batch_dir()
     print(f"✅ 开始批量运行，共 {len(BATCH_GPS_TARGETS)} 个点位")
@@ -616,7 +724,13 @@ def batch_run():
                 action = env.parse_gpt_decision(action_str)
                 obs, reward, terminated, truncated, info = env.step(action)
 
-                print(f"Step {env.current_step} | Action: {action} | {info['msg']} | reward: {reward}")
+                # 批量运行时也显示修正过程
+                if action_type == "move" and "theoretical_lat" in info:
+                    print(f"Step {env.current_step} | Action: {action} | {info['msg']}")
+                    print(
+                        f"   理论坐标：{info['theoretical_lat']:.6f}, {info['theoretical_lng']:.6f} → 实际坐标：{info['actual_lat']:.6f}, {info['actual_lng']:.6f} (偏差{info['coord_correction_diff_m']:.2f}米) | reward: {reward}")
+                else:
+                    print(f"Step {env.current_step} | Action: {action} | {info['msg']} | reward: {reward}")
 
                 if truncated:
                     break
@@ -627,15 +741,25 @@ def batch_run():
                 f.write(env.final_prediction)
             print(f"✅ 预测完成，结果已保存: {result_path}")
 
+            # 保存坐标修正历史（仅移动动作）
+            if env.coord_correction_history:
+                corr_path = os.path.join(point_dir, "coord_correction_history.csv")
+                with open(corr_path, "w", encoding="utf-8", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=env.coord_correction_history[0].keys())
+                    writer.writeheader()
+                    writer.writerows(env.coord_correction_history)
+                print(f"✅ 坐标修正历史已保存: {corr_path}")
+
         except Exception as e:
             print(f"❌ 该点运行失败: {e}")
+            traceback.print_exc()
             continue
+
 
 # ====================== 运行 ======================
 if __name__ == "__main__":
-    # 选一个运行：
-    # 1. 手动控制
-    test_point = {"name": "ManualTest", "lat": 47.53097481458263, "lng":19.06958490497365}
+    # 1. 手动控制（核心测试）
+    test_point = {"name": "ManualTest", "lat": 47.53097481458263, "lng": 19.06958490497365}
     pd, idir = init_point_dir(test_point)
     env = StreetViewAutoLocEnv(
         initial_lat=test_point["lat"],
@@ -646,5 +770,5 @@ if __name__ == "__main__":
     env.reset()
     manual_control(env)
 
-    # 2. 批处理自动运行
+    # 2. 批处理自动运行（如需启用，注释上面的手动控制代码）
     # batch_run()
