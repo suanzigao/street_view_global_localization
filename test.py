@@ -37,6 +37,8 @@ GLOBAL_MAX_RETRIES = 3
 FOV_STEP = 20
 PITCH_STEP = 10
 TURN_ANGLE = 10
+# 新增：Google API参数
+GOOGLE_API_RADIUS = 6
 GPS_CSV_PATH = "minitest.csv"
 
 
@@ -172,17 +174,18 @@ class GoogleStreetViewData:
         self.move_step = move_step
         self.fov = 30
 
-    def init_position(self, lat: float, lng: float, heading: float = 0.0):
+    def init_position(self, lat: float, lng: float, heading: float = 0.0, fov: float = 30.0, pitch: float = 0.0):
         self.initial_lat = lat
         self.initial_lng = lng
         self.current_lat = lat
         self.current_lng = lng
         self.heading = heading
-        self.pitch = 0.0
+        self.pitch = pitch
+        self.fov = fov
 
     @retry_on_failure(3, 1.0)
     def get_metadata(self, lat: float, lng: float) -> Optional[Dict]:
-        params = {"location": f"{lat},{lng}", "radius": 50, "key": self.google_api_key}
+        params = {"location": f"{lat},{lng}", "radius": GOOGLE_API_RADIUS, "key": self.google_api_key}
         r = requests.get(self.metadata_url, params=params, timeout=10)
         data = r.json()
         return data if data.get("status") == "OK" else None
@@ -218,8 +221,8 @@ class GoogleStreetViewData:
             "heading": self.heading,
             "pitch": self.pitch,
             "fov": self.fov,
-            "radius": 6,
-            "size": "1920x1080",
+            "radius": GOOGLE_API_RADIUS,
+            "size": "640x640",
             "key": self.google_api_key
         }
         # 1. 先获取元数据（包含实际采样点坐标）
@@ -311,8 +314,9 @@ class StreetViewAutoLocEnv(gym.Env):
         )
 
         self.action_space = spaces.Discrete(6)
+        # 使用640x640作为观察空间的尺寸，因为Google API可能返回这个尺寸
         self.observation_space = spaces.Dict({
-            "image": spaces.Box(0, 255, (1080, 1920, 3), int),  # 匹配1080P分辨率
+            "image": spaces.Box(0, 255, (640, 640, 3), int),  # 匹配Google API返回的尺寸
             "lat": spaces.Box(-90, 90, (1,), float),
             "lng": spaces.Box(-180, 180, (1,), float),
             "heading": spaces.Box(0, 360, (1,), float),
@@ -394,7 +398,11 @@ class StreetViewAutoLocEnv(gym.Env):
         return max(0, min(5, int(match.group(1))))
 
     def get_observation(self) -> Dict[str, Any]:
-        img_arr = np.array(self.current_image) if self.current_image else np.zeros((1080, 1920, 3), int)
+        if self.current_image:
+            img_arr = np.array(self.current_image)
+        else:
+            # 使用640x640作为默认尺寸，因为Google API可能返回这个尺寸
+            img_arr = np.zeros((640, 640, 3), int)
         return {
             "image": img_arr,
             "lat": np.array([self.data_handler.current_lat]),
@@ -419,6 +427,13 @@ class StreetViewAutoLocEnv(gym.Env):
 
         # 记录动作历史
         self.action_history.append(f"Step {self.current_step}: {a_type} {a_dir}")
+
+        # 保存当前状态用于轨迹记录
+        current_lat = self.data_handler.current_lat
+        current_lng = self.data_handler.current_lng
+        current_heading = self.data_handler.heading
+        current_fov = self.data_handler.fov if hasattr(self.data_handler, 'fov') else 30
+        current_pitch = self.data_handler.pitch
 
         # ========== 1. 执行对应动作 ==========
         if a_type == "move":
@@ -460,6 +475,12 @@ class StreetViewAutoLocEnv(gym.Env):
         # ========== 2. 获取图像（所有动作都需要更新图像） ==========
         try:
             self.current_image, actual_lat, actual_lng = self.data_handler.get_street_view_image()
+            
+            # 保存图像路径到历史记录
+            if self.current_image:
+                img_path, img_b64 = save_streetview_image(self.current_image, self.current_step, self.img_save_dir)
+                self.image_path_history[self.current_step] = img_path
+                self.image_b64_history[self.current_step] = img_b64
 
             # ========== 3. 仅在移动动作时执行坐标修正 ==========
             if a_type == "move" and actual_lat and actual_lng:
@@ -495,6 +516,35 @@ class StreetViewAutoLocEnv(gym.Env):
             self.current_image = None
             reward = -1.0
             info["error"] = f"获取图像失败: {str(e)}"
+        
+        # 记录所有操作到轨迹历史
+        if not hasattr(self, 'trajectory_history'):
+            self.trajectory_history = []
+        
+        # 确定动作描述
+        if a_type == "move":
+            action_desc = f"Move {a_dir} {info.get('actual_distance', 0):.2f}m"
+        elif a_type == "turn":
+            delta = -TURN_ANGLE if a_dir == "left" else TURN_ANGLE
+            action_desc = f"Turn {a_dir} {abs(delta)}°"
+        elif a_type == "fov":
+            new_fov = self.data_handler.fov if hasattr(self.data_handler, 'fov') else 30
+            action_desc = f"FOV {a_dir} to {new_fov}°"
+        elif a_type == "pitch":
+            action_desc = f"Pitch {a_dir} to {self.data_handler.pitch}°"
+        else:
+            action_desc = f"{a_type} {a_dir}"
+        
+        # 记录轨迹点
+        self.trajectory_history.append({
+            "step": self.current_step,
+            "lat": self.data_handler.current_lat,
+            "lng": self.data_handler.current_lng,
+            "heading": self.data_handler.heading,
+            "fov": self.data_handler.fov if hasattr(self.data_handler, 'fov') else 30,
+            "pitch": self.data_handler.pitch,
+            "action": action_desc
+        })
 
         # ========== 4. 检查是否达到最大步数 ==========
         if self.current_step >= self.max_steps:
@@ -567,6 +617,7 @@ class StreetViewAutoLocEnv(gym.Env):
         self.image_path_history = {}
         self.image_b64_history = {}
         self.coord_correction_history = []  # 重置坐标修正历史
+        self.trajectory_history = []  # 重置轨迹历史
         # 重置临时坐标记录
         self.current_theoretical_lat = None
         self.current_theoretical_lng = None
@@ -577,6 +628,11 @@ class StreetViewAutoLocEnv(gym.Env):
         try:
             # 重置时获取初始图像（仅获取，不修正坐标，保持初始传入的GPS）
             self.current_image, _, _ = self.data_handler.get_street_view_image()
+            # 保存初始图像到历史记录
+            if self.current_image:
+                img_path, img_b64 = save_streetview_image(self.current_image, 0, self.img_save_dir)
+                self.image_path_history[0] = img_path
+                self.image_b64_history[0] = img_b64
         except:
             self.current_image = None
         return self.get_observation()
@@ -604,6 +660,222 @@ def calculate_gps_distance(lat1: float, lng1: float, lat2: float, lng2: float) -
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     distance = R * c  # 米
     return distance
+
+
+# ====================== 生成可视化HTML页面 ======================
+def generate_visualization(env, point_dir):
+    """
+    生成HTML页面，可视化轨迹和图像
+    """
+    # 收集轨迹数据
+    trajectory = []
+    # 添加初始位置
+    trajectory.append({
+        "step": 0,
+        "lat": env.data_handler.initial_lat,
+        "lng": env.data_handler.initial_lng,
+        "heading": env.data_handler.heading,
+        "fov": env.data_handler.fov if hasattr(env.data_handler, 'fov') else 30,
+        "pitch": env.data_handler.pitch,
+        "action": "Initial position"
+    })
+    
+    # 添加所有操作的轨迹点
+    if hasattr(env, 'trajectory_history'):
+        for item in env.trajectory_history:
+            trajectory.append(item)
+    
+    # 收集图像数据
+    images = []
+    for step, img_path in env.image_path_history.items():
+        images.append({
+            "step": step,
+            "path": img_path
+        })
+    
+    # 生成HTML内容
+    html_content = '''
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Street View Navigation Visualization</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .map-container {
+            width: 100%;
+            height: 500px;
+            margin-bottom: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        #map {
+            width: 100%;
+            height: 100%;
+        }
+        .timeline {
+            margin-top: 30px;
+        }
+        .timeline h2 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .step {
+            display: flex;
+            margin-bottom: 30px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 20px;
+        }
+        .step-info {
+            flex: 1;
+            padding-right: 20px;
+        }
+        .step-image {
+            flex: 1;
+        }
+        .step-image img {
+            max-width: 100%;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .step-number {
+            font-size: 24px;
+            font-weight: bold;
+            color: #4CAF50;
+            margin-bottom: 10px;
+        }
+        .step-details {
+            color: #666;
+        }
+        .step-details p {
+            margin: 5px 0;
+        }
+    </style>
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAXmbPK8IXtGV9fjWVI8K4b5cw9Tshrvy0"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>Street View Navigation Visualization</h1>
+        
+        <div class="map-container">
+            <div id="map"></div>
+        </div>
+        
+        <div class="timeline">
+            <h2>Navigation Timeline</h2>
+            {timeline_html}
+        </div>
+    </div>
+    
+    <script>
+        // 轨迹数据
+        const trajectory = {trajectory_data};
+        
+        // 初始化地图
+        function initMap() {
+            // 使用第一个点作为中心
+            const center = new google.maps.LatLng(trajectory[0].lat, trajectory[0].lng);
+            
+            const map = new google.maps.Map(document.getElementById('map'), {
+                zoom: 18,
+                center: center,
+                mapTypeId: google.maps.MapTypeId.SATELLITE
+            });
+            
+            // 添加标记
+            trajectory.forEach((point, index) => {
+                const marker = new google.maps.Marker({
+                    position: new google.maps.LatLng(point.lat, point.lng),
+                    map: map,
+                    title: `Step ${point.step}: ${point.action}`
+                });
+                
+                // 添加信息窗口
+                const infoWindow = new google.maps.InfoWindow({
+                    content: `<strong>Step ${point.step}</strong><br>
+                             Lat: ${point.lat.toFixed(6)}<br>
+                             Lng: ${point.lng.toFixed(6)}<br>
+                             Heading: ${point.heading.toFixed(1)}°<br>
+                             FOV: ${point.fov.toFixed(1)}°<br>
+                             Pitch: ${point.pitch.toFixed(1)}°<br>
+                             Action: ${point.action}`
+                });
+                
+                marker.addListener('click', function() {
+                    infoWindow.open(map, marker);
+                });
+            });
+            
+            // 绘制轨迹线
+            const path = trajectory.map(point => new google.maps.LatLng(point.lat, point.lng));
+            const polyline = new google.maps.Polyline({
+                path: path,
+                geodesic: true,
+                strokeColor: '#FF0000',
+                strokeOpacity: 1.0,
+                strokeWeight: 2
+            });
+            
+            polyline.setMap(map);
+        }
+        
+        // 页面加载完成后初始化地图
+        window.onload = initMap;
+    </script>
+</body>
+</html>
+    '''
+    
+    # 生成时间线HTML
+    timeline_html = ""
+    for item in trajectory:
+        timeline_html += f"""
+        <div class="step">
+            <div class="step-info">
+                <div class="step-number">Step {item['step']}</div>
+                <div class="step-details">
+                    <p><strong>Action:</strong> {item['action']}</p>
+                    <p><strong>GPS:</strong> {item['lat']:.6f}, {item['lng']:.6f}</p>
+                    <p><strong>Heading:</strong> {item['heading']:.1f}°</p>
+                    <p><strong>FOV:</strong> {item['fov']:.1f}°</p>
+                    <p><strong>Pitch:</strong> {item['pitch']:.1f}°</p>
+                </div>
+            </div>
+            <div class="step-image">
+                <!-- 这里可以添加对应步骤的图像 -->
+                <img src="streetview_images/step_{item['step']}_streetview.jpg" alt="Step {item['step']}">
+            </div>
+        </div>
+        """
+    
+    # 格式化轨迹数据为JavaScript对象
+    trajectory_data = str(trajectory).replace("'", "\"")
+    
+    # 替换HTML模板中的占位符
+    html_content = html_content.replace("{timeline_html}", timeline_html)
+    html_content = html_content.replace("{trajectory_data}", trajectory_data)
+    
+    # 保存HTML文件
+    html_path = os.path.join(point_dir, "visualization.html")
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(html_content)
+    
+    print(f"✅ 可视化HTML页面已生成: {html_path}")
 
 
 # ====================== 手动控制（增强反馈版） ======================
@@ -641,6 +913,9 @@ def manual_control(env):
                 for corr in env.coord_correction_history:
                     print(
                         f"Step {corr['step']}: 理论({corr['theoretical_lat']:.6f},{corr['theoretical_lng']:.6f}) → 实际({corr['actual_lat']:.6f},{corr['actual_lng']:.6f}) | 偏差 {corr['distance_diff']:.2f} 米")
+            
+            # 生成可视化HTML页面
+            generate_visualization(env, pd)
             break
 
         # 扩展指令映射（新增z/x/r/f）
