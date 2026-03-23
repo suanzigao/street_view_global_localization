@@ -37,6 +37,7 @@ GLOBAL_MAX_RETRIES = 3
 FOV_STEP = 20
 PITCH_STEP = 10
 TURN_ANGLE = 10
+FOV_DEFAULT = 50
 # 新增：Google API参数
 GOOGLE_API_RADIUS = 6
 GPS_CSV_PATH = "minitest.csv"
@@ -172,9 +173,9 @@ class GoogleStreetViewData:
         self.heading = 0.0
         self.pitch = 0.0
         self.move_step = move_step
-        self.fov = 30
+        self.fov = FOV_DEFAULT
 
-    def init_position(self, lat: float, lng: float, heading: float = 0.0, fov: float = 30.0, pitch: float = 0.0):
+    def init_position(self, lat: float, lng: float, heading: float = 0.0, fov: float = FOV_DEFAULT, pitch: float = 0.0):
         self.initial_lat = lat
         self.initial_lng = lng
         self.current_lat = lat
@@ -432,7 +433,7 @@ class StreetViewAutoLocEnv(gym.Env):
         current_lat = self.data_handler.current_lat
         current_lng = self.data_handler.current_lng
         current_heading = self.data_handler.heading
-        current_fov = self.data_handler.fov if hasattr(self.data_handler, 'fov') else 30
+        current_fov = self.data_handler.fov if hasattr(self.data_handler, 'fov') else FOV_DEFAULT
         current_pitch = self.data_handler.pitch
 
         # ========== 1. 执行对应动作 ==========
@@ -455,7 +456,7 @@ class StreetViewAutoLocEnv(gym.Env):
             info["msg"] = f"Turned {a_dir.upper()} {abs(delta)}°"
         elif a_type == "fov":
             # FOV缩放：仅调整视角，不修改坐标
-            current_fov = self.data_handler.fov if hasattr(self.data_handler, 'fov') else 30
+            current_fov = self.data_handler.fov if hasattr(self.data_handler, 'fov') else FOV_DEFAULT
             if a_dir == "zoom_in":
                 new_fov = max(10, current_fov - FOV_STEP)
             else:
@@ -541,7 +542,7 @@ class StreetViewAutoLocEnv(gym.Env):
             "lat": self.data_handler.current_lat,
             "lng": self.data_handler.current_lng,
             "heading": self.data_handler.heading,
-            "fov": self.data_handler.fov if hasattr(self.data_handler, 'fov') else 30,
+            "fov": self.data_handler.fov if hasattr(self.data_handler, 'fov') else FOV_DEFAULT,
             "pitch": self.data_handler.pitch,
             "action": action_desc
         })
@@ -675,7 +676,7 @@ def generate_visualization(env, point_dir):
         "lat": env.data_handler.initial_lat,
         "lng": env.data_handler.initial_lng,
         "heading": env.data_handler.heading,
-        "fov": env.data_handler.fov if hasattr(env.data_handler, 'fov') else 30,
+        "fov": env.data_handler.fov if hasattr(env.data_handler, 'fov') else FOV_DEFAULT,
         "pitch": env.data_handler.pitch,
         "action": "Initial position"
     })
