@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>移动步数对比 - 街景定位</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        .chart-container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            padding: 30px;
+            margin-bottom: 30px;
+        }
+        .chart-title {
+            text-align: center;
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 20px;
+            font-weight: bold;
+        }
+        .chart-wrapper {
+            position: relative;
+            height: 400px;
+        }
+        .summary-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+        }
+        .summary-table th {
+            background-color: #4CAF50;
+            color: white;
+            padding: 15px;
+            text-align: center;
+            font-weight: bold;
+        }
+        .summary-table td {
+            padding: 15px;
+            text-align: center;
+            border-bottom: 1px solid #ddd;
+        }
+        .summary-table tr:hover {
+            background-color: #f5f5f5;
+        }
+        .best {
+            background-color: #d4edda !important;
+            color: #155724;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>街景定位 - 不同移动步数对比</h1>
+        
+        <div class="chart-container">
+            <div class="chart-title">误差范围分布对比</div>
+            <div class="chart-wrapper">
+                <canvas id="errorChart"></canvas>
+            </div>
+        </div>
+        
+        <div class="chart-container">
+            <div class="chart-title">平均预测误差对比</div>
+            <div class="chart-wrapper">
+                <canvas id="avgErrorChart"></canvas>
+            </div>
+        </div>
+        
+        <table class="summary-table">
+            <thead>
+                <tr>
+                    <th>移动步数</th>
+                    <th>总点数</th>
+                    <th>有效预测</th>
+                    <th>无效预测</th>
+                    <th>平均误差 (米)</th>
+                    <th>≤ 1km</th>
+                    <th>≤ 25km</th>
+                    <th>≤ 125km</th>
+                    <th>≤ 250km</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>0 步</td>
+                    <td>100</td>
+                    <td>100</td>
+                    <td>0</td>
+                    <td>634,723.13</td>
+                    <td>4.0%</td>
+                    <td>57.0%</td>
+                    <td>58.0%</td>
+                    <td>63.0%</td>
+                </tr>
+                <tr>
+                    <td>5 步</td>
+                    <td>100</td>
+                    <td>99</td>
+                    <td>1</td>
+                    <td>569,043.09</td>
+                    <td>6.1%</td>
+                    <td>68.7%</td>
+                    <td>69.7%</td>
+                    <td>75.8%</td>
+                </tr>
+                <tr>
+                    <td>10 步</td>
+                    <td>100</td>
+                    <td>100</td>
+                    <td>0</td>
+                    <td>360,263.58</td>
+                    <td>10.0%</td>
+                    <td>78.0%</td>
+                    <td>80.0%</td>
+                    <td>84.0%</td>
+                </tr>
+                <tr class="best">
+                    <td>15 步</td>
+                    <td>99</td>
+                    <td>44</td>
+                    <td>55</td>
+                    <td>215,888.28</td>
+                    <td>6.8%</td>
+                    <td>84.1%</td>
+                    <td>84.1%</td>
+                    <td>84.1%</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    
+    <script>
+        const errorRanges = ['≤ 1km', '≤ 25km', '≤ 125km', '≤ 250km'];
+        const steps0 = [4.0, 57.0, 58.0, 63.0];
+        const steps5 = [6.1, 68.7, 69.7, 75.8];
+        const steps10 = [10.0, 78.0, 80.0, 84.0];
+        const steps15 = [6.8, 84.1, 84.1, 84.1];
+        
+        // 误差范围分布对比图
+        const ctx1 = document.getElementById('errorChart').getContext('2d');
+        new Chart(ctx1, {
+            type: 'line',
+            data: {
+                labels: errorRanges,
+                datasets: [
+                    {
+                        label: '0 步',
+                        data: steps0,
+                        borderColor: '#FF6384',
+                        backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                        borderWidth: 3,
+                        tension: 0,
+                        pointBackgroundColor: '#FF6384',
+                        pointBorderColor: '#fff',
+                        pointBorderWidth: 2,
+                        pointRadius: 6,
+                        pointHoverRadius: 8
+                    },
+                    {
+                        label: '5 步',
+                        data: steps5,
+                        borderColor: '#36A2EB',
+                        backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                        borderWidth: 3,
+                        tension: 0,
+                        pointBackgroundColor: '#36A2EB',
+                        pointBorderColor: '#fff',
+                        pointBorderWidth: 2,
+                        pointRadius: 6,
+                        pointHoverRadius: 8
+                    },
+                    {
+                        label: '10 步',
+                        data: steps10,
+                        borderColor: '#FFCE56',
+                        backgroundColor: 'rgba(255, 206, 86, 0.1)',
+                        borderWidth: 3,
+                        tension: 0,
+                        pointBackgroundColor: '#FFCE56',
+                        pointBorderColor: '#fff',
+                        pointBorderWidth: 2,
+                        pointRadius: 6,
+                        pointHoverRadius: 8
+                    },
+                    {
+                        label: '15 步',
+                        data: steps15,
+                        borderColor: '#4CAF50',
+                        backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                        borderWidth: 3,
+                        tension: 0,
+                        pointBackgroundColor: '#4CAF50',
+                        pointBorderColor: '#fff',
+                        pointBorderWidth: 2,
+                        pointRadius: 6,
+                        pointHoverRadius: 8
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'top',
+                        labels: {
+                            font: {
+                                size: 14
+                            }
+                        }
+                    },
+                    title: {
+                        display: true,
+                        text: '不同移动步数下的误差范围分布',
+                        font: {
+                            size: 16
+                        }
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return context.dataset.label + ': ' + context.parsed.y.toFixed(1) + '%';
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 100,
+                        title: {
+                            display: true,
+                            text: '百分比 (%)'
+                        },
+                        ticks: {
+                            callback: function(value) {
+                                return value + '%';
+                            }
+                        }
+                    },
+                    x: {
+                        title: {
+                            display: true,
+                            text: '误差范围'
+                        }
+                    }
+                }
+            }
+        });
+        
+        // 平均误差对比图
+        const ctx2 = document.getElementById('avgErrorChart').getContext('2d');
+        new Chart(ctx2, {
+            type: 'bar',
+            data: {
+                labels: ['0 步', '5 步', '10 步', '15 步'],
+                datasets: [{
+                    label: '平均预测误差 (米)',
+                    data: [634723.13, 569043.09, 360263.58, 215888.28],
+                    backgroundColor: [
+                        'rgba(255, 99, 132, 0.7)',
+                        'rgba(54, 162, 235, 0.7)',
+                        'rgba(255, 206, 86, 0.7)',
+                        'rgba(76, 175, 80, 0.7)'
+                    ],
+                    borderColor: [
+                        'rgba(255, 99, 132, 1)',
+                        'rgba(54, 162, 235, 1)',
+                        'rgba(255, 206, 86, 1)',
+                        'rgba(76, 175, 80, 1)'
+                    ],
+                    borderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    title: {
+                        display: true,
+                        text: '不同移动步数下的平均预测误差',
+                        font: {
+                            size: 16
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: '误差 (米)'
+                        },
+                        ticks: {
+                            callback: function(value) {
+                                return value.toLocaleString() + ' m';
+                            }
+                        }
+                    },
+                    x: {
+                        title: {
+                            display: true,
+                            text: '移动步数'
+                        }
+                    }
+                }
+            }
+        });
+    </script>
+</body>
+</html>
