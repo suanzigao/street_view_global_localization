@@ -24,7 +24,7 @@ load_dotenv()
 
 # 全局配置
 BATCH_ROOT_DIR = "batch_streetview_results"
-GLOBAL_MAX_STEPS = 0
+GLOBAL_MAX_STEPS = 10
 GLOBAL_MOVE_STEP = 15.0
 GLOBAL_MAX_RETRIES = 3
 FOV_STEP = 20
@@ -32,7 +32,7 @@ PITCH_STEP = 10
 TURN_ANGLE = 45
 FOV_DEFAULT = 60
 GOOGLE_API_RADIUS = 10
-GPS_CSV_PATH = "geochain_combined.csv"
+GPS_CSV_PATH = "geochain_mini_10.csv"
 
 # 导入模块
 from utils import (
@@ -112,6 +112,22 @@ def generate_visualization(env, point_dir):
         if hasattr(env, 'reason_history') and idx > 0 and idx <= len(env.reason_history):
             reason = env.reason_history[idx - 1]
         
+        # 检查是否有分割图像
+        has_segmented = hasattr(env, 'segmented_image_history') and item['step'] in env.segmented_image_history
+        
+        # 确定显示的图像路径
+        if has_segmented:
+            # 有分割图像时，显示分割后的图像
+            seg_info = env.segmented_image_history[item['step']][0]
+            img_src = "streetview_images/step{}_segmented.png".format(item['step'])
+            img_alt = f"Step {item['step']} - Segmented: {seg_info.get('prompt', 'unknown')}"
+            segment_label = f"<p><strong>Segmented Objects:</strong> {seg_info.get('prompt', 'unknown')}</p>"
+        else:
+            # 没有分割图像时，显示原始图像
+            img_src = "streetview_images/step_{}_streetview.jpg".format(item['step'])
+            img_alt = f"Step {item['step']}"
+            segment_label = ""
+        
         timeline_html += f"""
         <div class="step">
             <div class="step-info">
@@ -119,6 +135,7 @@ def generate_visualization(env, point_dir):
                 <div class="step-details">
                     <p><strong>Action:</strong> {item['action']}</p>
                     {f'<p><strong>Reason:</strong> {reason}</p>' if reason else ''}
+                    {segment_label}
                     <p><strong>GPS:</strong> {item['lat']:.6f}, {item['lng']:.6f}</p>
                     <p><strong>Heading:</strong> {item['heading']:.1f}°</p>
                     <p><strong>FOV:</strong> {item['fov']:.1f}°</p>
@@ -126,10 +143,32 @@ def generate_visualization(env, point_dir):
                 </div>
             </div>
             <div class="step-image">
-                <img src="streetview_images/step_{item['step']}_streetview.jpg" alt="Step {item['step']}">
+                <img src="{img_src}" alt="{img_alt}">
             </div>
         </div>
         """
+    
+    # 生成 Places API 搜索结果 HTML
+    places_html = ""
+    if hasattr(env, 'found_places') and env.found_places:
+        places_html += '<div class="places-section"><h2>📍 Places Found via Google Places API</h2><div class="places-grid">'
+        for place in env.found_places:
+            places_html += f"""
+            <div class="place-card">
+                <div class="place-card-header">Step {place['step']}: {place['query']}</div>
+                <div class="place-card-body">
+                    <p><strong>🏢 Name:</strong> {place['name']}</p>
+                    <p><strong>📍 Address:</strong> {place['address']}</p>
+                    <p><strong>🌍 Coordinates:</strong> {place['lat']:.6f}, {place['lng']:.6f}</p>
+                </div>
+            </div>
+            """
+        places_html += "</div></div>"
+    
+    # 准备 Places 数据传给 JavaScript 地图（仅用于卡片展示，无需地图标记）
+    found_places_list = env.found_places if hasattr(env, 'found_places') else []
+    import json
+    found_places_json = json.dumps(found_places_list, default=str)
     
     html_content = f'''
 <!DOCTYPE html>
@@ -143,6 +182,85 @@ def generate_visualization(env, point_dir):
         body {{ font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }}
         h1 {{ text-align: center; color: #333; }}
         .container {{ max-width: 1400px; margin: 0 auto; }}
+        
+        /* ========== 动画播放器样式 ========== */
+        .animation-player {{
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            margin-bottom: 30px;
+            overflow: hidden;
+        }}
+        .player-header {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        .player-title {{ font-size: 18px; font-weight: bold; }}
+        .player-controls {{ display: flex; gap: 10px; align-items: center; }}
+        .control-btn {{
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }}
+        .control-btn:hover {{ background: rgba(255,255,255,0.3); }}
+        .control-btn.active {{ background: rgba(255,255,255,0.4); }}
+        .step-indicator {{ background: rgba(255,255,255,0.2); padding: 8px 16px; border-radius: 6px; font-size: 14px; }}
+        .player-content {{ display: flex; height: 500px; }}
+        .map-view {{ flex: 1; position: relative; border-right: 2px solid #eee; }}
+        #animationMap {{ width: 100%; height: 100%; }}
+        .map-overlay {{
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(255,255,255,0.95);
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 13px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }}
+        .map-overlay div {{ margin: 3px 0; }}
+        .streetview-view {{ flex: 1; position: relative; background: #000; }}
+        .streetview-view img {{ width: 100%; height: 100%; object-fit: contain; }}
+        .streetview-overlay {{
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 13px;
+        }}
+        .player-footer {{ padding: 15px 20px; background: #f8f9fa; border-top: 1px solid #eee; }}
+        .timeline-slider {{
+            width: 100%;
+            height: 8px;
+            -webkit-appearance: none;
+            background: #ddd;
+            border-radius: 4px;
+            outline: none;
+            cursor: pointer;
+        }}
+        .timeline-slider::-webkit-slider-thumb {{
+            -webkit-appearance: none;
+            width: 20px;
+            height: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        }}
+        .timeline-labels {{ display: flex; justify-content: space-between; margin-top: 8px; font-size: 12px; color: #666; }}
+        /* ========== 原有样式 ========== */
         .map-container {{ width: 100%; height: 500px; margin-bottom: 20px; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; }}
         #map {{ width: 100%; height: 100%; }}
         .timeline {{ margin-top: 30px; }}
@@ -160,16 +278,67 @@ def generate_visualization(env, point_dir):
         .prediction-content pre {{ white-space: pre-wrap; font-family: Arial, sans-serif; color: #555; line-height: 1.5; }}
         .prediction-error {{ margin-top: 15px; padding: 10px; background-color: #e6f7ff; border-left: 4px solid #1e90ff; border-radius: 4px; }}
         .prediction-error strong {{ color: #1e90ff; }}
+        .places-section {{ margin-top: 30px; }}
+        .places-section h2 {{ color: #333; margin-bottom: 15px; }}
+        .places-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 15px; }}
+        .place-card {{ background: white; border-radius: 8px; border: 1px solid #e0e0e0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }}
+        .place-card-header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 10px 15px; font-weight: bold; font-size: 14px; }}
+        .place-card-body {{ padding: 12px 15px; }}
+        .place-card-body p {{ margin: 6px 0; color: #444; font-size: 13px; }}
+        .place-card-body strong {{ color: #555; }}
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Street View Navigation Visualization</h1>
+        
+        <!-- ========== 动画播放器 ========== -->
+        <div class="animation-player">
+            <div class="player-header">
+                <div class="player-title">🎬 Navigation Animation</div>
+                <div class="player-controls">
+                    <span class="step-indicator" id="stepIndicator">Step 0 / {len(trajectory) - 1}</span>
+                    <button class="control-btn" id="rewindBtn" title="Rewind">⏮</button>
+                    <button class="control-btn" id="prevBtn" title="Previous">◀</button>
+                    <button class="control-btn active" id="playPauseBtn" title="Play/Pause">▶</button>
+                    <button class="control-btn" id="nextBtn" title="Next">▶</button>
+                    <button class="control-btn" id="fastForwardBtn" title="Fast Forward">⏭</button>
+                </div>
+            </div>
+            <div class="player-content">
+                <div class="map-view">
+                    <div id="animationMap"></div>
+                    <div class="map-overlay">
+                        <div><strong>GPS:</strong> <span id="mapGps">-</span></div>
+                        <div><strong>Heading:</strong> <span id="mapHeading">-</span></div>
+                        <div><strong>FOV:</strong> <span id="mapFov">-</span></div>
+                        <div><strong>Pitch:</strong> <span id="mapPitch">-</span></div>
+                        <div><strong>Action:</strong> <span id="mapAction">-</span></div>
+                    </div>
+                </div>
+                <div class="streetview-view">
+                    <img id="streetviewImage" src="streetview_images/step_0_streetview.jpg" alt="Street View">
+                    <div class="streetview-overlay">
+                        <div id="streetviewStep">Step 0</div>
+                        <div id="streetviewAction">Initial position</div>
+                    </div>
+                </div>
+            </div>
+            <div class="player-footer">
+                <input type="range" class="timeline-slider" id="timelineSlider" min="0" max="{len(trajectory) - 1}" value="0">
+                <div class="timeline-labels">
+                    <span>Start</span>
+                    <span>End (Prediction)</span>
+                </div>
+            </div>
+        </div>
+        
         <div class="map-container"><div id="map"></div></div>
         <div class="timeline">
             <h2>Navigation Timeline</h2>
             {timeline_html}
         </div>
+        {places_html}
         <div class="final-prediction">
             <h2>Final Prediction</h2>
             <div class="prediction-content">
@@ -180,6 +349,161 @@ def generate_visualization(env, point_dir):
     </div>
     <script>
         const trajectory = {trajectory};
+        let currentStep = 0;
+        let isPlaying = false;
+        let playInterval = null;
+        let animationMap = null;
+        let positionMarker = null;
+        let fovPolygon = null;
+        let trajectoryPolyline = null;
+        
+        function initAnimationMap() {{
+            const center = new google.maps.LatLng(trajectory[0].lat, trajectory[0].lng);
+            animationMap = new google.maps.Map(document.getElementById('animationMap'), {{
+                zoom: 19,
+                center: center,
+                mapTypeId: google.maps.MapTypeId.SATELLITE
+            }});
+            
+            const path = trajectory.map(p => new google.maps.LatLng(p.lat, p.lng));
+            trajectoryPolyline = new google.maps.Polyline({{
+                path: path,
+                geodesic: true,
+                strokeColor: '#FF0000',
+                strokeOpacity: 0.6,
+                strokeWeight: 3
+            }});
+            trajectoryPolyline.setMap(animationMap);
+            
+            updateAnimationView(0);
+        }}
+        
+        function updateAnimationView(step) {{
+            currentStep = step;
+            const point = trajectory[step];
+            const pos = new google.maps.LatLng(point.lat, point.lng);
+            
+            if (!positionMarker) {{
+                positionMarker = new google.maps.Marker({{
+                    position: pos,
+                    map: animationMap,
+                    icon: {{
+                        path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+                        scale: 6,
+                        fillColor: '#4CAF50',
+                        fillOpacity: 1,
+                        strokeColor: '#fff',
+                        strokeWeight: 2,
+                        rotation: point.heading
+                    }},
+                    title: `Step ${{point.step}}`
+                }});
+            }} else {{
+                positionMarker.setPosition(pos);
+                positionMarker.setIcon({{
+                    path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+                    scale: 6,
+                    fillColor: '#4CAF50',
+                    fillOpacity: 1,
+                    strokeColor: '#fff',
+                    strokeWeight: 2,
+                    rotation: point.heading
+                }});
+            }}
+            
+            updateFovCone(point);
+            
+            document.getElementById('mapGps').textContent = `${{point.lat.toFixed(6)}}, ${{point.lng.toFixed(6)}}`;
+            document.getElementById('mapHeading').textContent = `${{point.heading.toFixed(1)}}°`;
+            document.getElementById('mapFov').textContent = `${{point.fov.toFixed(1)}}°`;
+            document.getElementById('mapPitch').textContent = `${{point.pitch.toFixed(1)}}°`;
+            document.getElementById('mapAction').textContent = point.action;
+            
+            document.getElementById('streetviewImage').src = `streetview_images/step_${{point.step}}_streetview.jpg`;
+            document.getElementById('streetviewStep').textContent = `Step ${{point.step}}`;
+            document.getElementById('streetviewAction').textContent = point.action;
+            
+            document.getElementById('stepIndicator').textContent = `Step ${{step}} / ${{trajectory.length - 1}}`;
+            document.getElementById('timelineSlider').value = step;
+            
+            animationMap.setCenter(pos);
+        }}
+        
+        function updateFovCone(point) {{
+            const center = new google.maps.LatLng(point.lat, point.lng);
+            const heading = point.heading;
+            const fov = point.fov;
+            const distance = 0.0002;
+            
+            const halfFov = fov / 2;
+            const leftAngle = heading - halfFov;
+            const rightAngle = heading + halfFov;
+            
+            const centerLat = point.lat;
+            const centerLng = point.lng;
+            
+            function calcCoord(angle, dist) {{
+                const R = 6378137;
+                const d = dist * R;
+                const lat1 = centerLat * Math.PI / 180;
+                const lng1 = centerLng * Math.PI / 180;
+                const ang = angle * Math.PI / 180;
+                
+                const lat2 = Math.asin(
+                    Math.sin(lat1) * Math.cos(d / R) +
+                    Math.cos(lat1) * Math.sin(d / R) * Math.cos(ang)
+                );
+                const lng2 = lng1 + Math.atan2(
+                    Math.sin(ang) * Math.sin(d / R) * Math.cos(lat1),
+                    Math.cos(d / R) - Math.sin(lat1) * Math.sin(lat2)
+                );
+                return [lat2 * 180 / Math.PI, lng2 * 180 / Math.PI];
+            }}
+            
+            const points = [center];
+            for (let a = leftAngle; a <= rightAngle; a += 5) {{
+                const coord = calcCoord(a, distance);
+                points.push(new google.maps.LatLng(coord[0], coord[1]));
+            }}
+            points.push(center);
+            
+            if (fovPolygon) {{
+                fovPolygon.setMap(null);
+            }}
+            
+            fovPolygon = new google.maps.Polygon({{
+                paths: points,
+                map: animationMap,
+                fillColor: '#667eea',
+                fillOpacity: 0.4,
+                strokeColor: '#667eea',
+                strokeWeight: 2
+            }});
+        }}
+        
+        function playAnimation() {{
+            if (isPlaying) return;
+            isPlaying = true;
+            document.getElementById('playPauseBtn').textContent = '⏸';
+            
+            playInterval = setInterval(() => {{
+                if (currentStep < trajectory.length - 1) {{
+                    updateAnimationView(currentStep + 1);
+                }} else {{
+                    stopAnimation();
+                }}
+            }}, 1500);
+        }}
+        
+        function stopAnimation() {{
+            isPlaying = false;
+            document.getElementById('playPauseBtn').textContent = '▶';
+            if (playInterval) {{
+                clearInterval(playInterval);
+                playInterval = null;
+            }}
+        }}
+        
         function initMap() {{
             const center = new google.maps.LatLng(trajectory[0].lat, trajectory[0].lng);
             const map = new google.maps.Map(document.getElementById('map'), {{ zoom: 18, center: center, mapTypeId: google.maps.MapTypeId.SATELLITE }});
@@ -192,7 +516,47 @@ def generate_visualization(env, point_dir):
             const polyline = new google.maps.Polyline({{ path: path, geodesic: true, strokeColor: '#FF0000', strokeOpacity: 1.0, strokeWeight: 2 }});
             polyline.setMap(map);
         }}
-        window.onload = initMap;
+        
+        document.addEventListener('DOMContentLoaded', () => {{
+            initAnimationMap();
+            initMap();
+            
+            document.getElementById('playPauseBtn').addEventListener('click', () => {{
+                if (isPlaying) {{
+                    stopAnimation();
+                }} else {{
+                    if (currentStep >= trajectory.length - 1) {{
+                        updateAnimationView(0);
+                    }}
+                    playAnimation();
+                }}
+            }});
+            
+            document.getElementById('prevBtn').addEventListener('click', () => {{
+                stopAnimation();
+                if (currentStep > 0) updateAnimationView(currentStep - 1);
+            }});
+            
+            document.getElementById('nextBtn').addEventListener('click', () => {{
+                stopAnimation();
+                if (currentStep < trajectory.length - 1) updateAnimationView(currentStep + 1);
+            }});
+            
+            document.getElementById('rewindBtn').addEventListener('click', () => {{
+                stopAnimation();
+                updateAnimationView(0);
+            }});
+            
+            document.getElementById('fastForwardBtn').addEventListener('click', () => {{
+                stopAnimation();
+                updateAnimationView(trajectory.length - 1);
+            }});
+            
+            document.getElementById('timelineSlider').addEventListener('input', (e) => {{
+                stopAnimation();
+                updateAnimationView(parseInt(e.target.value));
+            }});
+        }});
     </script>
 </body>
 </html>
@@ -296,7 +660,7 @@ def generate_batch_summary(batch_dir, batch_results):
     
     average_error = total_error / valid_count if valid_count > 0 else 0
     
-    error_ranges = [1000, 25000, 125000, 250000]
+    error_ranges = [1000, 3000, 5000, 10000, 15000, 20000, 25000, 125000, 250000]
     range_counts = []
     for max_error in error_ranges:
         count = 0
@@ -380,7 +744,7 @@ def generate_batch_summary(batch_dir, batch_results):
         </div>
     </div>
     <script>
-        const errorRanges = ['≤ 1km', '≤ 25km', '≤ 125km', '≤ 250km'];
+        const errorRanges = ['≤ 1km', '≤ 3km', '≤ 5km', '≤ 10km', '≤ 15km', '≤ 20km', '≤ 25km', '≤ 125km', '≤ 250km'];
         const percentages = {range_percentages};
         new Chart(document.getElementById('errorChart'), {{
             type: 'line',
@@ -463,6 +827,7 @@ def batch_run():
     """
     batch_dir = init_batch_dir()
     batch_results = []
+    shared_sam3_tool = None
     
     try:
         gps_targets = read_gps_targets_from_csv(GPS_CSV_PATH)
@@ -491,6 +856,14 @@ def batch_run():
                 fov_default=FOV_DEFAULT
             )
             
+            if shared_sam3_tool is None:
+                print("🔄 预加载SAM3模型...")
+                env.preload_sam3()
+                shared_sam3_tool = env.sam3_tool
+            else:
+                env.sam3_tool = shared_sam3_tool
+                print("♻️ 复用已加载的SAM3模型")
+            
             env.reset()
             
             if env.max_steps == 0:
@@ -499,30 +872,89 @@ def batch_run():
                     env._force_final_prediction()
                     print(f"✅ 预测完成: {env.final_prediction}")
             else:
-                step = 0
                 truncated = False
                 
-                while step < env.max_steps and not truncated:
+                while env.current_step < env.max_steps and not truncated:
                     if env.current_image is None:
                         print("❌ 无图像，跳过该点")
                         break
                     
                     action_str = env.gpt4o_decision(env.current_image, env.current_step + 1)
-                    action, reason = env.parse_gpt_decision(action_str)
+                    print(f"📝 GPT原始响应:\n{action_str}\n{'-'*80}")
+                    action, reason, seg_prompts, search_query = env.parse_gpt_decision(action_str)
                     env.reason_history.append(reason)
+                    
+                    # 执行动作
                     obs, reward, terminated, truncated, info = env.step(action)
                     info["reason"] = reason
-                    step += 1
+                    
+                    action_type = info.get("action_type")
+                    
+                    # 检查是否检测到死循环
+                    if action_type == "invalid":
+                        print(f"❌ {info.get('msg', 'Unknown error')}")
+                        print(f"🔄 强制右转探索新区域...")
+                        # 强制执行右转操作，帮助大模型打破死循环
+                        move_action = "turn right"
+                        obs, reward, terminated, truncated, move_info = env.step(move_action)
+                        # 记录强制动作发生的步骤，重置死循环检测窗口
+                        # 使用负数索引来标识强制动作，避免与正常步骤混淆
+                        env.force_action_step = -env.current_step  # 使用负数标识强制动作
+                        # 添加强制动作标记到动作历史，以便死循环检测时识别
+                        env.action_history.append(f"Step {env.current_step}: force_action {move_action}")
+                        print(f"   自动执行: {move_action}")
+                        if move_info.get('msg'):
+                            print(f"   {move_info['msg']}")
+                        # 跳过本次循环，让大模型在新位置重新决策
+                        continue
                     
                     print(f"Step {env.current_step} | Action: {action}")
                     print(f"   Reason: {reason}")
                     
-                    action_type = info.get("action_type")
-                    if action_type == "move" and "theoretical_lat" in info:
+                    # 检查是否是 search 操作
+                    if action_type == "search":
+                        print(f"   {info['msg']}")
+                    elif action_type == "segment":
+                        # 分割操作：调用SAM3
+                        # 保存分割时的 step（分割操作不增加步数）
+                        segment_step = env.current_step
+                        if seg_prompts and env.current_image:
+                            print(f"🎯 SAM3分割请求: {', '.join(seg_prompts)}")
+                            try:
+                                # 构建保存路径
+                                seg_save_path = os.path.join(img_dir, f"step{segment_step}_segmented.png")
+
+                                # 调用SAM3分割（支持多类别叠加和自动保存）
+                                seg_result = env._call_sam3(
+                                    env.current_image,
+                                    seg_prompts,
+                                    save_path=seg_save_path,
+                                    output_format='PNG'
+                                )
+
+                                if seg_result.get('success') and seg_result.get('combined_image_b64'):
+                                    # 存储结果供后续GPT决策使用，使用分割时的step
+                                    env.segmented_image_history[segment_step] = [{
+                                        'prompt': ', '.join(seg_prompts),
+                                        'image_b64': seg_result['combined_image_b64'],
+                                        'saved_path': seg_result.get('combined_image_path'),
+                                        'prompt_count': seg_result.get('prompt_count', 0),
+                                        'results': seg_result.get('results', [])
+                                    }]
+                                    print(f"✅ SAM3分割完成，成功分割 {seg_result.get('prompt_count', 0)} 个类别")
+                                    print(f"📷 叠加掩码图像已保存: {seg_result.get('combined_image_path', seg_save_path)}")
+                                else:
+                                    print(f"⚠️ SAM3分割失败: {seg_result.get('error', 'Unknown error')}")
+
+                            except Exception as e:
+                                print(f"⚠️ SAM3分割失败: {e}")
+                        else:
+                            print(f"⚠️ 分割操作但无有效目标")
+                    elif action_type == "move" and "theoretical_lat" in info:
                         print(f"   {info['msg']}")
                         print(f"   理论坐标：{info['theoretical_lat']:.6f}, {info['theoretical_lng']:.6f} → 实际坐标：{info['actual_lat']:.6f}, {info['actual_lng']:.6f} (偏差{info['coord_correction_diff_m']:.2f}米)")
                     else:
-                        print(f"   {info['msg']}")
+                        print(f"   {info.get('msg', 'No message')}")
             
             result_path = os.path.join(point_dir, "final_prediction.txt")
             with open(result_path, "w", encoding="utf-8") as f:
@@ -580,6 +1012,16 @@ def batch_run():
         except Exception as e:
             print(f"❌ 该点运行失败: {e}")
             traceback.print_exc()
+        finally:
+            if 'env' in locals():
+                env.close(release_sam3=False)
+                print("🔄 环境已重置，SAM3模型保留供下次使用")
+    
+    if shared_sam3_tool is not None:
+        print("🔄 释放共享SAM3模型...")
+        if hasattr(shared_sam3_tool, 'close'):
+            shared_sam3_tool.close()
+        print("✅ SAM3模型已释放")
     
     generate_batch_summary(batch_dir, batch_results)
 

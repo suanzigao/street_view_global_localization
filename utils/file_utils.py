@@ -84,21 +84,22 @@ def image_to_base64(image: Image.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode('utf-8')
 
 
-def save_streetview_image(image: Image.Image, step_num: int, img_save_dir: str) -> Tuple[str, str]:
+def save_streetview_image(image: Image.Image, step_num: int, img_save_dir: str, metadata=None) -> Tuple[str, str]:
     """
-    保存街景图像并返回路径和Base64编码
+    保存街景图像并返回路径和Base64编码，同时保存相机参数元数据
     
     Args:
         image: PIL图像对象
         step_num: 当前步骤编号
         img_save_dir: 图像保存目录
+        metadata: 相机参数元数据（可选），包含heading, pitch, fov, relative_x, relative_y等
     
     Returns:
         (img_path: str, img_b64: str)
     """
     import base64
+    import json
     
-    # 确保目录存在
     os.makedirs(img_save_dir, exist_ok=True)
     
     img_path = os.path.join(img_save_dir, f"step_{step_num}_streetview.jpg")
@@ -114,6 +115,11 @@ def save_streetview_image(image: Image.Image, step_num: int, img_save_dir: str) 
     buf = BytesIO()
     image.save(buf, format='JPEG', quality=100)
     img_b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+    
+    if metadata:
+        metadata_path = os.path.join(img_save_dir, f"step_{step_num}_metadata.json")
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, indent=2)
     
     return img_path, img_b64
 

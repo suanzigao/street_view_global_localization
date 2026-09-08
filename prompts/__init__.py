@@ -1,7 +1,8 @@
-from .navigation_prompt import NAVIGATION_PROMPT
+from .navigation_prompt import NAVIGATION_PROMPT_TEMPLATE, SEGMENTATION_EXAMPLES
 from .prediction_prompt import FINAL_PREDICTION_PROMPT
 
 __all__ = [
-    "NAVIGATION_PROMPT",
+    "NAVIGATION_PROMPT_TEMPLATE",
+    "SEGMENTATION_EXAMPLES",
     "FINAL_PREDICTION_PROMPT"
 ]

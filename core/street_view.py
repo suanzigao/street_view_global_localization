@@ -5,18 +5,12 @@ Google街景数据处理模块
 """
 
 import os
+import math
 import requests
 from PIL import Image
 from io import BytesIO
 from typing import Tuple, Optional, Dict
 from utils.decorators import retry_on_failure
-
-PROXY_HOST = "127.0.0.1"
-PROXY_PORT = 7897
-PROXIES = {
-    "http": f"http://{PROXY_HOST}:{PROXY_PORT}",
-    "https": f"http://{PROXY_HOST}:{PROXY_PORT}"
-}
 
 
 class GoogleStreetViewData:
@@ -110,7 +104,7 @@ class GoogleStreetViewData:
             "key": self.google_api_key
         }
         
-        response = requests.get(self.metadata_url, params=params, proxies=PROXIES, timeout=10)
+        response = requests.get(self.metadata_url, params=params, timeout=10)
         data = response.json()
         
         if data.get("status") == "OK" and "location" in data:
@@ -151,7 +145,7 @@ class GoogleStreetViewData:
             actual_lng = metadata["location"]["lng"]
         
         # 获取街景图像
-        response = requests.get(self.static_url, params=params, proxies=PROXIES, stream=True, timeout=10)
+        response = requests.get(self.static_url, params=params, stream=True, timeout=10)
         image = Image.open(BytesIO(response.content)).convert("RGB")
         
         return image, actual_lat, actual_lng
@@ -224,8 +218,6 @@ class GoogleStreetViewData:
         Returns:
             距离（米）
         """
-        import math
-        
         R = 6378137.0
         lat1_rad = math.radians(lat1)
         lng1_rad = math.radians(lng1)

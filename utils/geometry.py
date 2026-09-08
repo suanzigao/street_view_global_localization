@@ -59,3 +59,35 @@ def calculate_gps_distance(lat1: float, lng1: float, lat2: float, lng2: float) -
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     
     return R * c
+
+
+def calculate_relative_offset(initial_lat: float, initial_lng: float, 
+                               current_lat: float, current_lng: float) -> tuple:
+    """
+    计算当前GPS坐标相对于初始GPS坐标的东向和北向偏移（米）
+    
+    Args:
+        initial_lat, initial_lng: 初始坐标
+        current_lat, current_lng: 当前坐标
+    
+    Returns:
+        (relative_x, relative_y): 东向偏移（米），北向偏移（米）
+    """
+    R = 6378137.0  # 地球赤道半径（米）
+    
+    initial_lat_rad = math.radians(initial_lat)
+    initial_lng_rad = math.radians(initial_lng)
+    current_lat_rad = math.radians(current_lat)
+    current_lng_rad = math.radians(current_lng)
+    
+    dlat = current_lat_rad - initial_lat_rad
+    dlng = current_lng_rad - initial_lng_rad
+    
+    # 北向偏移 = 纬度差 × 地球半径
+    relative_y = dlat * R
+    
+    # 东向偏移 = 经度差 × 地球半径 × cos(纬度)
+    avg_lat_rad = (initial_lat_rad + current_lat_rad) / 2
+    relative_x = dlng * R * math.cos(avg_lat_rad)
+    
+    return relative_x, relative_y

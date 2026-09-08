@@ -21,3 +21,29 @@ batch_streetview_results/
 batch_geoclip_results/
 2026-*-geoagent_batch/
 .env
+
+# 大文件/模型/缓存
+models/vggt_venv/
+models/vggt_weights/
+models/vggt/
+cache/
+
+# 数据结果目录
+manual_streetview_results/
+matching_results/
+prompt_test_results/
+osm_output/
+debug_output/
+reconstruction_output/
+reconstruction_output_batch/
+satellite_zoom_comparison/
+test_relative_position_output/
+2026-*batch_run/
+
+# 测试数据
+test/streetview_images/
+test/streetview_images copy/
+test/streetview_images copy 2/
+test/test_image/
+test/satellite_images/
+test/2026-*batch_run/
