@@ -47,3 +47,6 @@ test/streetview_images copy 2/
 test/test_image/
 test/satellite_images/
 test/2026-*batch_run/
+
+# npm 依赖
+node_modules/

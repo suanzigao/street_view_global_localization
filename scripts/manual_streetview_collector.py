@@ -234,14 +234,16 @@ class ManualStreetViewCollector:
         print("  h / help      - 显示帮助")
         print("="*50)
     
-    def run(self):
+    def run(self, lat=None, lng=None):
         print("\n" + "="*60)
         print("         人工街景图像采集工具")
         print("="*60)
         
         try:
-            lat = float(input("请输入初始纬度: "))
-            lng = float(input("请输入初始经度: "))
+            if lat is None:
+                lat = float(input("请输入初始纬度: "))
+            if lng is None:
+                lng = float(input("请输入初始经度: "))
             
             if not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
                 print("❌ 坐标无效")
@@ -317,5 +319,11 @@ class ManualStreetViewCollector:
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description='人工街景图像采集工具')
+    parser.add_argument('--lat', type=float, default=None, help='初始纬度')
+    parser.add_argument('--lng', type=float, default=None, help='初始经度')
+    args = parser.parse_args()
+
     collector = ManualStreetViewCollector()
-    collector.run()
+    collector.run(lat=args.lat, lng=args.lng)

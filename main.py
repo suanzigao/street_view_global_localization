@@ -33,6 +33,7 @@ TURN_ANGLE = 45
 FOV_DEFAULT = 60
 GOOGLE_API_RADIUS = 10
 GPS_CSV_PATH = "geochain_mini_10.csv"
+USE_BEV = True
 
 # 导入模块
 from utils import (
@@ -111,7 +112,17 @@ def generate_visualization(env, point_dir):
         reason = ""
         if hasattr(env, 'reason_history') and idx > 0 and idx <= len(env.reason_history):
             reason = env.reason_history[idx - 1]
-        
+
+        # 该步的视觉观察（observation），与 reason 分开展示，作为历史记忆
+        observation = ""
+        if hasattr(env, 'image_meta_history') and item['step'] in env.image_meta_history:
+            observation = env.image_meta_history[item['step']].get('observation', '')
+
+        # 该步的当前计划（plan），展示意图如何跨步演进
+        plan = ""
+        if hasattr(env, 'image_meta_history') and item['step'] in env.image_meta_history:
+            plan = env.image_meta_history[item['step']].get('plan', '')
+
         # 检查是否有分割图像
         has_segmented = hasattr(env, 'segmented_image_history') and item['step'] in env.segmented_image_history
         
@@ -135,6 +146,8 @@ def generate_visualization(env, point_dir):
                 <div class="step-details">
                     <p><strong>Action:</strong> {item['action']}</p>
                     {f'<p><strong>Reason:</strong> {reason}</p>' if reason else ''}
+                    {f'<p><strong>👁 Observation:</strong> {observation}</p>' if observation else ''}
+                    {f'<p><strong>🧭 Plan:</strong> {plan}</p>' if plan else ''}
                     {segment_label}
                     <p><strong>GPS:</strong> {item['lat']:.6f}, {item['lng']:.6f}</p>
                     <p><strong>Heading:</strong> {item['heading']:.1f}°</p>
@@ -169,6 +182,28 @@ def generate_visualization(env, point_dir):
     found_places_list = env.found_places if hasattr(env, 'found_places') else []
     import json
     found_places_json = json.dumps(found_places_list, default=str)
+
+    # 离散探索图数据（节点=采样点，边=move 方向及结果）
+    graph_nodes = []
+    graph_edges = []
+    if hasattr(env, '_graph_nodes') and env._graph_nodes:
+        node_id_by_key = {}
+        for key, node in env._graph_nodes.items():
+            node_id_by_key[key] = node["id"]
+            graph_nodes.append({"id": node["id"], "lat": node["lat"], "lng": node["lng"], "step": node["step"]})
+        for (from_key, dir_q), edge in env._graph_edges.items():
+            if from_key not in node_id_by_key:
+                continue
+            to_id = node_id_by_key.get(edge["to"]) if edge["to"] else None
+            graph_edges.append({
+                "from": node_id_by_key[from_key],
+                "to": to_id,
+                "dir": dir_q,
+                "step": edge["step"],
+            })
+    graph_nodes_json = json.dumps(graph_nodes)
+    graph_edges_json = json.dumps(graph_edges)
+    graph_has_data = "true" if graph_nodes else "false"
     
     html_content = f'''
 <!DOCTYPE html>
@@ -286,6 +321,13 @@ def generate_visualization(env, point_dir):
         .place-card-body {{ padding: 12px 15px; }}
         .place-card-body p {{ margin: 6px 0; color: #444; font-size: 13px; }}
         .place-card-body strong {{ color: #555; }}
+        /* ========== 探索图可视化 ========== */
+        .exploration-graph {{ margin-top: 30px; }}
+        .exploration-graph h2 {{ color: #333; margin-bottom: 15px; }}
+        #graphSvg {{ width: 100%; height: 560px; background: #fafafa; border: 1px solid #ddd; border-radius: 8px; }}
+        .graph-legend {{ margin-top: 10px; font-size: 13px; color: #555; display: flex; gap: 20px; flex-wrap: wrap; }}
+        .graph-legend span {{ display: inline-flex; align-items: center; gap: 5px; }}
+        .legend-line {{ display: inline-block; width: 24px; height: 3px; border-radius: 2px; }}
     </style>
 </head>
 <body>
@@ -338,6 +380,16 @@ def generate_visualization(env, point_dir):
             <h2>Navigation Timeline</h2>
             {timeline_html}
         </div>
+        <div class="exploration-graph">
+            <h2>🗺️ Exploration Graph (discrete nodes &amp; move directions)</h2>
+            <svg id="graphSvg"></svg>
+            <div class="graph-legend">
+                <span><span class="legend-line" style="background:#4CAF50;"></span> move success (edge)</span>
+                <span><span class="legend-line" style="background:#e74c3c;"></span> move blocked (dead end)</span>
+                <span><span style="width:12px;height:12px;border-radius:50%;background:#2196F3;display:inline-block;"></span> visited node (sampling point)</span>
+                <span><span style="width:12px;height:12px;border-radius:50%;background:#FF9800;display:inline-block;"></span> current node</span>
+            </div>
+        </div>
         {places_html}
         <div class="final-prediction">
             <h2>Final Prediction</h2>
@@ -349,6 +401,9 @@ def generate_visualization(env, point_dir):
     </div>
     <script>
         const trajectory = {trajectory};
+        const graphNodes = {graph_nodes_json};
+        const graphEdges = {graph_edges_json};
+        const graphHasData = {graph_has_data};
         let currentStep = 0;
         let isPlaying = false;
         let playInterval = null;
@@ -516,10 +571,100 @@ def generate_visualization(env, point_dir):
             const polyline = new google.maps.Polyline({{ path: path, geodesic: true, strokeColor: '#FF0000', strokeOpacity: 1.0, strokeWeight: 2 }});
             polyline.setMap(map);
         }}
+
+        function drawGraph() {{
+            if (!graphHasData || graphNodes.length === 0) return;
+            const svg = document.getElementById('graphSvg');
+            if (!svg) return;
+
+            const width = svg.clientWidth || 800;
+            const height = svg.clientHeight || 560;
+            const padding = 70;
+
+            // 等距圆柱投影：以第一个节点为原点，米为单位
+            const refLat = graphNodes[0].lat;
+            const refLng = graphNodes[0].lng;
+            const cosLat = Math.cos(refLat * Math.PI / 180);
+            const proj = (n) => {{
+                const x = (n.lng - refLng) * 111320 * cosLat;
+                const y = -(n.lat - refLat) * 110540;
+                return [x, y];
+            }};
+
+            const pts = graphNodes.map(n => {{ const [x, y] = proj(n); return {{ n, x, y }}; }});
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            pts.forEach(p => {{ minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); }});
+            const spanX = (maxX - minX) || 1;
+            const spanY = (maxY - minY) || 1;
+            const scale = Math.min((width - 2 * padding) / spanX, (height - 2 * padding) / spanY);
+            const midX = (minX + maxX) / 2, midY = (minY + maxY) / 2;
+            const toSvg = (x, y) => [width / 2 + (x - midX) * scale, height / 2 + (y - midY) * scale];
+
+            const idToP = {{}};
+            pts.forEach(p => {{ idToP[p.n.id] = p; }});
+
+            const dirNames = {{0:'N',45:'NE',90:'E',135:'SE',180:'S',225:'SW',270:'W',315:'NW'}};
+            const NS = 'http://www.w3.org/2000/svg';
+
+            // 边
+            graphEdges.forEach(e => {{
+                const fromP = idToP[e.from];
+                if (!fromP) return;
+                const [x1, y1] = toSvg(fromP.x, fromP.y);
+                let x2, y2;
+                const blocked = (e.to === null || e.to === undefined);
+                if (blocked) {{
+                    const ang = (e.dir || 0) * Math.PI / 180;
+                    x2 = x1 + Math.sin(ang) * 34;
+                    y2 = y1 - Math.cos(ang) * 34;
+                }} else {{
+                    const toP = idToP[e.to];
+                    if (!toP) return;
+                    [x2, y2] = toSvg(toP.x, toP.y);
+                }}
+                const line = document.createElementNS(NS, 'line');
+                line.setAttribute('x1', x1); line.setAttribute('y1', y1);
+                line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+                line.setAttribute('stroke', blocked ? '#e74c3c' : '#4CAF50');
+                line.setAttribute('stroke-width', blocked ? '2' : '2.5');
+                if (blocked) line.setAttribute('stroke-dasharray', '6,4');
+                svg.appendChild(line);
+                if (!blocked) {{
+                    const t = document.createElementNS(NS, 'text');
+                    t.setAttribute('x', (x1 + x2) / 2);
+                    t.setAttribute('y', (y1 + y2) / 2);
+                    t.setAttribute('font-size', '10');
+                    t.setAttribute('fill', '#2e7d32');
+                    t.setAttribute('text-anchor', 'middle');
+                    t.textContent = dirNames[e.dir] || e.dir;
+                    svg.appendChild(t);
+                }}
+            }});
+
+            // 节点（最后一个 visited 节点 = 当前节点）
+            const currentNodeId = graphNodes[graphNodes.length - 1].id;
+            pts.forEach(p => {{
+                const [x, y] = toSvg(p.x, p.y);
+                const isCur = (p.n.id === currentNodeId);
+                const c = document.createElementNS(NS, 'circle');
+                c.setAttribute('cx', x); c.setAttribute('cy', y);
+                c.setAttribute('r', isCur ? 10 : 7);
+                c.setAttribute('fill', isCur ? '#FF9800' : '#2196F3');
+                c.setAttribute('stroke', '#fff'); c.setAttribute('stroke-width', '2');
+                svg.appendChild(c);
+                const lb = document.createElementNS(NS, 'text');
+                lb.setAttribute('x', x + 13); lb.setAttribute('y', y + 4);
+                lb.setAttribute('font-size', '12'); lb.setAttribute('fill', '#333');
+                lb.setAttribute('font-weight', 'bold');
+                lb.textContent = '#' + p.n.id + (isCur ? ' (now)' : '');
+                svg.appendChild(lb);
+            }});
+        }}
         
         document.addEventListener('DOMContentLoaded', () => {{
             initAnimationMap();
             initMap();
+            drawGraph();
             
             document.getElementById('playPauseBtn').addEventListener('click', () => {{
                 if (isPlaying) {{
@@ -853,7 +998,8 @@ def batch_run():
                 turn_angle=TURN_ANGLE,
                 fov_step=FOV_STEP,
                 pitch_step=PITCH_STEP,
-                fov_default=FOV_DEFAULT
+                fov_default=FOV_DEFAULT,
+                use_bev=USE_BEV
             )
             
             if shared_sam3_tool is None:
@@ -883,6 +1029,8 @@ def batch_run():
                     print(f"📝 GPT原始响应:\n{action_str}\n{'-'*80}")
                     action, reason, seg_prompts, search_query = env.parse_gpt_decision(action_str)
                     env.reason_history.append(reason)
+                    if env.current_step in env.image_meta_history:
+                        env.image_meta_history[env.current_step]['reason'] = reason
                     
                     # 执行动作
                     obs, reward, terminated, truncated, info = env.step(action)
@@ -915,41 +1063,9 @@ def batch_run():
                     if action_type == "search":
                         print(f"   {info['msg']}")
                     elif action_type == "segment":
-                        # 分割操作：调用SAM3
-                        # 保存分割时的 step（分割操作不增加步数）
-                        segment_step = env.current_step
-                        if seg_prompts and env.current_image:
-                            print(f"🎯 SAM3分割请求: {', '.join(seg_prompts)}")
-                            try:
-                                # 构建保存路径
-                                seg_save_path = os.path.join(img_dir, f"step{segment_step}_segmented.png")
-
-                                # 调用SAM3分割（支持多类别叠加和自动保存）
-                                seg_result = env._call_sam3(
-                                    env.current_image,
-                                    seg_prompts,
-                                    save_path=seg_save_path,
-                                    output_format='PNG'
-                                )
-
-                                if seg_result.get('success') and seg_result.get('combined_image_b64'):
-                                    # 存储结果供后续GPT决策使用，使用分割时的step
-                                    env.segmented_image_history[segment_step] = [{
-                                        'prompt': ', '.join(seg_prompts),
-                                        'image_b64': seg_result['combined_image_b64'],
-                                        'saved_path': seg_result.get('combined_image_path'),
-                                        'prompt_count': seg_result.get('prompt_count', 0),
-                                        'results': seg_result.get('results', [])
-                                    }]
-                                    print(f"✅ SAM3分割完成，成功分割 {seg_result.get('prompt_count', 0)} 个类别")
-                                    print(f"📷 叠加掩码图像已保存: {seg_result.get('combined_image_path', seg_save_path)}")
-                                else:
-                                    print(f"⚠️ SAM3分割失败: {seg_result.get('error', 'Unknown error')}")
-
-                            except Exception as e:
-                                print(f"⚠️ SAM3分割失败: {e}")
-                        else:
-                            print(f"⚠️ 分割操作但无有效目标")
+                        # 分割已在 env.step() 内部完成：文字证据 + 图像证据均存入 env，
+                        # 这里只打印结果，避免重复调用 SAM3。
+                        print(f"   {info.get('msg', '')}")
                     elif action_type == "move" and "theoretical_lat" in info:
                         print(f"   {info['msg']}")
                         print(f"   理论坐标：{info['theoretical_lat']:.6f}, {info['theoretical_lng']:.6f} → 实际坐标：{info['actual_lat']:.6f}, {info['actual_lng']:.6f} (偏差{info['coord_correction_diff_m']:.2f}米)")

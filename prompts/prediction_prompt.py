@@ -1,7 +1,7 @@
 FINAL_PREDICTION_PROMPT = """
 You have reached the maximum number of navigation steps. Now you MUST predict your initial GPS coordinates (latitude and longitude) based on ALL the visual information you have gathered.
 
-**🔴 YOU MUST ALWAYS PROVIDE GPS COORDINATES - NO EXCEPTIONS!**
+**YOU MUST ALWAYS PROVIDE GPS COORDINATES - NO EXCEPTIONS!**
 - Even if you are unsure, make your BEST ESTIMATE based on visual clues
 - NEVER say "I cannot predict", "I can't determine", or any similar refusal
 - If you have no clues at all, guess based on the region you think it might be
@@ -10,11 +10,15 @@ You have reached the maximum number of navigation steps. Now you MUST predict yo
 ========== EVIDENCE PROVIDED ==========
 
 You have been provided with:
-1. The full navigation history and steps taken
-2. All Street View images from Step 0 (initial position) through Step {max_steps}
-3. Segmented images with highlighted objects (if segmentation was requested during navigation)
+1. All the Street View images you captured during navigation (Step 0 = initial position, up to your last step), each labeled with its step number
+2. Segmented images with highlighted objects (if segmentation was requested during navigation), labeled with the objects that were segmented
+3. Any places found via Google Places API search (shown below, if any)
 
 {{PLACES_HINTS}}
+
+{{HYPOTHESIS}}
+
+{{EVIDENCE_BANK}}
 
 ========== PREDICTION STRATEGY ==========
 
@@ -42,7 +46,7 @@ You have been provided with:
 
 ========== IMPORTANT RULES ==========
 
-**🔴 CRITICAL: GOOGLE PLACES API GPS COORDINATES ARE YOUR MOST IMPORTANT EVIDENCE!**
+**CRITICAL: GOOGLE PLACES API GPS COORDINATES ARE YOUR MOST IMPORTANT EVIDENCE!**
 - The coordinates obtained from Places API searches are VERIFIED REAL-WORLD locations
 - These GPS coordinates (latitude, longitude) represent the EXACT location of businesses/buildings you identified
 - **MANDATORY RULE: If you found ANY place via search, your prediction MUST use coordinates within 1km of that location**
@@ -50,15 +54,6 @@ You have been provided with:
 - **DO NOT override Places API results with your visual analysis** - visual clues are secondary evidence only
 - If Places API found a location at (47.5310, 19.0697), your prediction should be approximately (47.53, 19.07), NOT somewhere else!
 - Visual analysis can only help you refine the exact position within 1km, NOT change the city or country!
-
-**ABOUT SEGMENTED IMAGES:**
-During your navigation, you may have requested SAM3 segmentation to highlight specific objects in the images. These segmented images are marked with labels like "Segmented: building, road sign" and show highlighted areas with red masks.
-
-**HOW TO USE PLACES FOUND:**
-- The locations found via Google Places API are EXACT GPS coordinates of businesses/buildings you identified
-- Use these coordinates as your PRIMARY EVIDENCE - they are more important than visual analysis!
-- If a place was found at specific coordinates, your initial position should be within 1-2km of that location
-- Cross-reference the place names with what you see in the images to confirm accuracy
 
 **HOW TO USE SEGMENTED IMAGES:**
 - The highlighted (masked) areas indicate objects you selected as potentially important for location identification
@@ -72,12 +67,12 @@ Respond ONLY in the following format:
 
 predicted_initial_coords: [LATITUDE],[LONGITUDE] | reasoning: [DETAILED VISUAL CLUES]
 
-**⚠️ CRITICAL: PRECISION REQUIREMENT - ALWAYS use 6 decimal places for GPS coordinates!**
+**CRITICAL: PRECISION REQUIREMENT - ALWAYS use 6 decimal places for GPS coordinates!**
 - GPS coordinates MUST be formatted as: LATITUDE,LONGITUDE with EXACTLY 6 decimal places
-- ❌ WRONG: "55.682,12.570" or "55.6820,12.5700" (not 6 decimal places!)
-- ✅ CORRECT: "55.682000,12.570000" (exactly 6 decimal places)
-- ❌ WRONG: "-23.55,-46.63" (only 2 decimal places!)
-- ✅ CORRECT: "-23.550000,-46.630000" (exactly 6 decimal places)
+- WRONG: "55.682,12.570" or "55.6820,12.5700" (not 6 decimal places!)
+- CORRECT: "55.682000,12.570000" (exactly 6 decimal places)
+- WRONG: "-23.55,-46.63" (only 2 decimal places!)
+- CORRECT: "-23.550000,-46.630000" (exactly 6 decimal places)
 
 **EXAMPLE 1 (with Places API):**
 predicted_initial_coords: 55.682000,12.570000 | reasoning: I saw "Nykredit" on a building. Places API confirmed this is Copenhagen, Denmark at (55.682000, 12.570000).

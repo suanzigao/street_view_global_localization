@@ -118,6 +118,65 @@ class GoogleStreetViewData:
         
         return None
     
+    def detect_road_heading(self, lat: float, lng: float, probe_dist: float = 60.0) -> float:
+        """
+        探测道路延伸方向：对 4 个正交方向各探测 probe_dist 米，看哪些方向
+        仍有街景采样点（沿路方向连续有采样点，横穿方向走不远就出路面）。
+        返回道路延伸方向的 heading（度，0/90/180/270 之一）。
+        """
+        has = {}
+        for hdg in (0, 90, 180, 270):
+            la, lo = self._offset(lat, lng, hdg, probe_dist)
+            try:
+                meta = self.get_metadata(la, lo)
+                has[hdg] = meta is not None
+            except Exception:
+                has[hdg] = False
+        
+        # 沿路轴 = 两个对立方向都有街景（如东西向 90/270 都有）
+        for a, b in ((0, 180), (90, 270)):
+            if has[a] and has[b]:
+                return float(a)
+        # 兜底：返回任一有街景的方向，否则默认 0
+        for hdg in (0, 90, 180, 270):
+            if has[hdg]:
+                return float(hdg)
+        return 0.0
+    
+    def probe_streetview_directions(self, lat: float, lng: float, probe_dist: float = 15.0) -> Dict[int, bool]:
+        """
+        探测以 (lat, lng) 为中心、8 个方向 probe_dist 米处是否存在街景采样点。
+
+        8 个方向为绝对地理方位角：0(北)、45(东北)、90(东)、135(东南)、
+        180(南)、225(西南)、270(西)、315(西北)。
+
+        返回 {heading_deg: bool}，True 表示该方向 probe_dist 米处有街景采样点。
+        """
+        result = {}
+        for hdg in range(0, 360, 45):
+            la, lo = self._offset(lat, lng, hdg, probe_dist)
+            try:
+                meta = self.get_metadata(la, lo)
+                result[hdg] = meta is not None
+            except Exception:
+                result[hdg] = False
+        return result
+
+    def _offset(self, lat: float, lng: float, heading_deg: float, dist: float):
+        """沿 heading_deg 方向移动 dist 米后的坐标。"""
+        R = 6378137.0
+        ang = math.radians(heading_deg)
+        d = dist
+        lat2 = math.asin(
+            math.sin(math.radians(lat)) * math.cos(d / R) +
+            math.cos(math.radians(lat)) * math.sin(d / R) * math.cos(ang)
+        )
+        lng2 = math.radians(lng) + math.atan2(
+            math.sin(ang) * math.sin(d / R) * math.cos(math.radians(lat)),
+            math.cos(d / R) - math.sin(math.radians(lat)) * math.sin(lat2)
+        )
+        return math.degrees(lat2), math.degrees(lng2)
+    
     @retry_on_failure(max_retries=3, delay=1.0)
     def get_street_view_image(self) -> Tuple[Optional[Image.Image], Optional[float], Optional[float]]:
         """

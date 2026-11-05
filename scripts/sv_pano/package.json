@@ -1,0 +1,17 @@
+{
+  "name": "sv_pano",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@googlemaps/js-api-loader": "^2.1.3",
+    "jsdom": "^22.1.0",
+    "puppeteer": "^25.16.0"
+  }
+}
